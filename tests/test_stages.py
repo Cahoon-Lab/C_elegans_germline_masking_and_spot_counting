@@ -8,15 +8,15 @@ import pandas as pd
 import pytest
 from test_end_to_end import patched_reader  # noqa: F401  (fixture: synthetic 3-channel gonad)
 
-from germquant import pipeline, stages
+from germquant import pipeline, schema, stages
 from germquant.config import load_config
 from germquant.stages import STAGES, Outcome, apply_cli_switches, run_stage, stage_enabled
 
 
 def test_registry_is_ordered_and_unique():
     names = [s.name for s in STAGES]
-    assert names == ["read", "segment", "measure", "germline", "axis", "spots", "granule", "coloc",
-                     "qc", "render", "write"]
+    assert names == ["read", "segment", "measure", "germline", "axis", "spots", "sc_trace", "granule",
+                     "coloc", "qc", "render", "write"]
     assert len(set(names)) == len(names)
     keys = [s.config_key for s in STAGES if s.config_key]
     assert len(set(keys)) == len(keys)
@@ -105,7 +105,7 @@ def test_failed_granule_stage_flags_and_continues(tmp_path, patched_reader, monk
     assert res["stages"]["coloc"]["status"] == "skipped"
     assert res["stages"]["coloc"]["reason"] == "granule stage failed"
     assert any(f.startswith("granule:FAILED_RuntimeError") for f in res["qc_flags"])
-    assert set(res["tables"]) == {"nuclei", "spots", "granules", "coloc", "image_summary"}
+    assert set(res["tables"]) == set(schema.TABLES)
     assert res["tables"]["granules"].empty and res["tables"]["coloc"].empty
     assert set(res["stages"]) == {s.name for s in STAGES}       # every registered stage is recorded
 

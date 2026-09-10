@@ -203,6 +203,59 @@ def process_image(
     if spots_res is not None:
         spots, per_nuc_spots, nuclei = spots_res
 
+    # ---- SC tracing (per-nucleus SC length, fragment lower bound, fragmentation index) ----
+    # The June 2026 tracer restored verbatim (germquant.sc.skeleton.trace_sc), run on the GERMLINE
+    # nuclei only (the label image is masked to them; the tracer traces every label it is given).
+    # Off by default (sc.trace.enabled); independent of coloc and of any granule channel, so a
+    # 3-channel DAPI/SYP/RAD-51 image yields spots and SC readouts in one run. docs/SC_TRACING.md.
+    sc_tracks = pd.DataFrame(columns=schema.SC_TRACKS)
+    sc_per_nuc = pd.DataFrame(columns=schema.SC_PER_NUCLEUS)
+    sc_summary_fields: dict = {}
+    ce_idx = role_to_idx.get("central_element")
+
+    def _sc_trace():
+        from .io.sample_metadata import expected_sc_count
+        from .sc import skan_available, trace_sc
+
+        if not skan_available():
+            flags.append("sc_trace:skan_missing")
+            return sc_tracks, sc_per_nuc, nuclei, {}
+        germ_ids = [int(v) for v in nuclei["nucleus_id"].tolist()]
+        germ_labels = np.where(np.isin(labels, germ_ids), labels, 0)
+        exp = expected_sc_count(sample["germ_cell"])
+        tracks, per_nuc = trace_sc(
+            stack.data[ce_idx], germ_labels, spacing,
+            marker=cfg.channel_map.marker("central_element"),
+            ridge_sigmas_um=tuple(cfg.get("sc.ridge_sigmas_um", [0.15, 0.25, 0.40])),
+            ridge_hyst_low_pct=float(cfg.get("sc.ridge_hyst_low_pct", 45.0)),
+            ridge_hyst_high_pct=float(cfg.get("sc.ridge_hyst_high_pct", 80.0)),
+            intensity_percentile=float(cfg.get("sc.intensity_percentile", 90.0)),
+            min_fragment_length_um=float(cfg.get("sc.min_fragment_length_um", 0.5)),
+            expected_n_tracks={nid: exp for nid in germ_ids} if exp else None,
+        )
+        df = nuclei
+        if not per_nuc.empty:
+            cols = per_nuc[["nucleus_id", "sc_total_length_um", "n_fragments", "sc_fragmentation_index",
+                            "expected_n_tracks"]].rename(columns={"n_fragments": "sc_n_fragments_lb",
+                                                                  "expected_n_tracks": "sc_expected_n_tracks"})
+            df = df.merge(cols, on="nucleus_id", how="left")
+        summary = {
+            "mean_sc_total_length_um": float(per_nuc["sc_total_length_um"].mean()) if len(per_nuc) else float("nan"),
+            "mean_sc_fragmentation_index": float(per_nuc["sc_fragmentation_index"].mean()) if len(per_nuc) else float("nan"),
+            "mean_sc_n_fragments_lb": float(per_nuc["n_fragments"].mean()) if len(per_nuc) else float("nan"),
+        }
+        flags.append(f"sc_trace:n_traced={int((per_nuc['n_fragments'] > 0).sum()) if len(per_nuc) else 0}")
+        flags.append("sc:uncalibrated")           # absolute lengths await the Imaris Filament calibration
+        return tracks, per_nuc, df, summary
+
+    sc_on = stage_enabled(cfg, "sc_trace")
+    sc_res = run_stage("sc_trace", _sc_trace, flags=flags, outcomes=outcomes,
+                       enabled=sc_on and ce_idx is not None and n_germline_nuclei > 0,
+                       skip_reason=("disabled" if not sc_on else
+                                    "no central_element channel" if ce_idx is None else "no germline nuclei"))
+    if sc_res is not None:
+        sc_tracks, sc_per_nuc, nuclei, sc_summary_fields = sc_res
+
     # ---- p-granule (PGL-1) surfacing, then SYP<->PGL-1 colocalization ----
     # Granules are surfaced as 3D objects inside the germline dilated by a perinuclear shell (P-granules
     # sit just OUTSIDE the nuclear envelope, so the region MUST include the perinuclear cytoplasm or the
@@ -285,7 +338,7 @@ def process_image(
         if "axis_position_um" in nuclei and not nuclei.empty else float("nan"),
         "qc_pass": qc_pass, "qc_flags": ";".join(qc_all),
         "segmentation_method": seg_method, "axis_confidence": axis_conf,
-        **coloc_summary_fields,
+        **coloc_summary_fields, **sc_summary_fields,
     }])
 
     # ---- write outputs ----
@@ -311,7 +364,8 @@ def process_image(
             excluded["granule_volume_um3"] = excluded["granule_volume_um3"].fillna(0.0)
         nuclei = pd.concat([nuclei, excluded], ignore_index=True)
     tables = {"nuclei": nuclei, "spots": spots, "granules": granules,
-              "coloc": coloc, "image_summary": image_summary}
+              "coloc": coloc, "image_summary": image_summary,
+              "sc_tracks": sc_tracks, "sc_per_nucleus": sc_per_nuc}
 
     def _write():
         _write_tables(tables, shared, out_dir, sample["image_id"], cfg.get("output.formats", ["csv"]))

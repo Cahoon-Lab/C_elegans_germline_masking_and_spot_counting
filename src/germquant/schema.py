@@ -3,10 +3,11 @@ intensities raw a.u. Every table carries the shared metadata block so R/Positron
 image_id (+ nucleus_id) and facets by genotype/sex/treatment.
 
 Growth rule (docs/ROADMAP_modular_pipeline.md): the schema is APPEND-ONLY. A new stage appends its
-columns at the end of an existing table or adds a new table in STAGE_TABLES; existing columns are never
-renamed, reordered, re-typed or removed, so every table written by an older commit stays a prefix of
-the current one and the golden regression gate (tests/test_golden.py, scripts/regression_diff.py) can
-tell "columns appended" from "values changed". Every declared table is written on every run, empty when
+columns at the end of an existing table's declared list or adds a new table in STAGE_TABLES; existing
+columns are never renamed, reordered, re-typed or removed. Declared columns are written first and any
+per-role extras after them (pipeline._conform_schema), so the columns of a table written by an older
+commit always appear in the same relative order in the current one and the golden regression gate
+(tests/test_golden.py, scripts/regression_diff.py) can tell "columns added" from "values changed". Every declared table is written on every run, empty when
 its stage is off, so consumers never hit a missing file.
 """
 
@@ -25,6 +26,22 @@ NUCLEI = [
     "n_spots",
     # p-granule (PGL-1) load assigned to the nearest germline nucleus (perinuclear granules)
     "n_granules", "granule_volume_um3",
+    # SC tracer (sc_trace stage, off by default): total SC length (recoverable), fragment count as a
+    # LOWER BOUND (strands overlap in 3D), SYP-intensity-CV fragmentation index, expected SC number
+    "sc_total_length_um", "sc_n_fragments_lb", "sc_fragmentation_index", "sc_expected_n_tracks",
+]
+
+# one row per SC track/fragment (sc_trace stage)
+SC_TRACKS = [
+    "track_id", "nucleus_id", "channel_role", "marker",
+    "length_um", "n_branches", "n_junctions", "tortuosity", "trace_method",
+]
+
+# per-nucleus SC aggregate (sc_trace stage)
+SC_PER_NUCLEUS = [
+    "nucleus_id", "marker", "n_fragments", "sc_total_length_um",
+    "sc_mean_fragment_um", "sc_median_fragment_um", "sc_longest_fragment_um",
+    "sc_mean_intensity", "sc_fragmentation_index", "expected_n_tracks",
 ]
 
 # one row per detected spot (RAD-51 etc.) — SpotMAX detector.
@@ -79,6 +96,8 @@ IMAGE_SUMMARY = [
     "manders_m1_syp_aggregate", "manders_m2_syp_aggregate",
     "frac_granules_overlapping_syp_aggregate", "overlap_pvalue_syp_aggregate",
     "frac_granules_overlapping_sc_ribbon",
+    # SC tracer gonad means over germline nuclei (sc_trace stage)
+    "mean_sc_total_length_um", "mean_sc_fragmentation_index", "mean_sc_n_fragments_lb",
 ]
 
 TABLES = {
@@ -87,6 +106,8 @@ TABLES = {
     "granules": GRANULES,
     "coloc": COLOC,
     "image_summary": IMAGE_SUMMARY,
+    "sc_tracks": SC_TRACKS,
+    "sc_per_nucleus": SC_PER_NUCLEUS,
 }
 
 # which stage owns which table (nuclei and image_summary are shared: every stage may append columns).
@@ -95,4 +116,5 @@ STAGE_TABLES = {
     "spots": ["spots"],
     "granule": ["granules"],
     "coloc": ["coloc"],
+    "sc_trace": ["sc_tracks", "sc_per_nucleus"],
 }

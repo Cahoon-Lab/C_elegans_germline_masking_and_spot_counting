@@ -58,6 +58,9 @@ STAGES: tuple[Stage, ...] = (
           "SpotMAX spot counting in the `foci` channel (RAD-51)",
           legacy_cli_help="segmentation only: skip RAD-51/SpotMAX spot detection (fast, never wedges)",
           config_sections=("spots",)),
+    Stage("sc_trace", "sc.trace.enabled", False, ("central_element",), True,
+          "per-nucleus SC tracing: SC length, fragment lower bound, fragmentation index (needs skan)",
+          config_sections=("sc",)),
     Stage("granule", "granule.enabled", True, ("granule", "central_element"), True,
           "PGL-1 granule segmentation in the perinuclear region (+ lamin shell)", default_from="coloc.enabled",
           config_sections=("granule", "coloc")),
@@ -154,7 +157,8 @@ def stage_hashes(cfg, role_to_idx: dict, extras: dict[str, str], model_sha: str 
 
 _STAGE_TOOLS = {
     "read": ("nd2",), "segment": ("cellpose", "torch"), "measure": ("scikit-image",),
-    "spots": ("spotmax", "cellacdc", "cupy"), "granule": ("scikit-image", "scipy"),
+    "spots": ("spotmax", "cellacdc", "cupy"), "sc_trace": ("skan", "scikit-image", "scipy"),
+    "granule": ("scikit-image", "scipy"),
     "coloc": ("scikit-image", "scipy"),
 }
 
