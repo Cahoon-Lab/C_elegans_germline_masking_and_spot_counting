@@ -90,7 +90,8 @@ def test_process_image_end_to_end(tmp_path, patched_reader):
     # empty granules/coloc tables, no failure flag.
     assert pd.read_csv(out / f"{res['image_id']}__granules.csv").empty
     assert pd.read_csv(out / f"{res['image_id']}__coloc.csv").empty
-    assert not any("coloc:FAILED" in f for f in res["qc_flags"])
+    assert not any(":FAILED_" in f for f in res["qc_flags"]), res["qc_flags"]
+    assert not [s for s, o in res["stages"].items() if o["status"] == "failed"], res["stages"]
     assert not (out / f"{res['image_id']}__granules_labels.tif").exists()
 
 
@@ -137,7 +138,8 @@ def test_process_image_4channel_coloc(tmp_path, patched_reader_4ch):
 
     res = pipeline.process_image("20251105_n2_nohs_HERM_001.nd2", cfg, out, prov=None)
 
-    assert not any("coloc:FAILED" in f for f in res["qc_flags"])
+    assert not any(":FAILED_" in f for f in res["qc_flags"]), res["qc_flags"]
+    assert not [s for s, o in res["stages"].items() if o["status"] == "failed"], res["stages"]
     granules = pd.read_csv(out / f"{res['image_id']}__granules.csv")
     assert len(granules) > 0
     assert (granules["marker"] == "PGL-1").all()

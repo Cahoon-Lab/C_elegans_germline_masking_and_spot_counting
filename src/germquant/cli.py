@@ -43,20 +43,14 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--out", required=True)
     pr.add_argument("--xy-stride", type=int, default=1, help="downsample xy for a quick test")
     pr.add_argument("--z-range", type=int, nargs=2, default=None, metavar=("Z0", "Z1"))
-    pr.add_argument("--no-spots", action="store_true",
-                    help="segmentation only: skip RAD-51/SpotMAX spot detection (fast, never wedges)")
-    pr.add_argument("--no-coloc", action="store_true",
-                    help="skip PGL-1 granule surfacing + SYP<->PGL-1 colocalization stage")
+    _add_stage_switches(pr)
 
     pb = sub.add_parser("batch", help="process every .nd2 under a folder, mirroring the tree")
     pb.add_argument("folder")
     pb.add_argument("--config", required=True)
     pb.add_argument("--out", required=True)
     pb.add_argument("--xy-stride", type=int, default=1)
-    pb.add_argument("--no-spots", action="store_true",
-                    help="segmentation only: skip RAD-51/SpotMAX spot detection (fast, never wedges)")
-    pb.add_argument("--no-coloc", action="store_true",
-                    help="skip PGL-1 granule surfacing + SYP<->PGL-1 colocalization stage")
+    _add_stage_switches(pb)
 
     pv = sub.add_parser("validate", help="compare pipeline output to hand-scored ground truth")
     pv.add_argument("--pred", help="pipeline CSV (counts/lengths mode)")
@@ -101,6 +95,23 @@ def main(argv: list[str] | None = None) -> int:
     }[args.cmd]()
 
 
+def _add_stage_switches(parser) -> None:
+    """One generated ``--no-<stage>`` per switchable stage in `germquant.stages.STAGES` (so
+    ``--no-spots`` and ``--no-coloc`` keep working and new optional stages get a switch for free)."""
+    from .stages import cli_switches
+
+    for st in cli_switches():
+        parser.add_argument(f"--no-{st.name}", action="store_true",
+                            help=st.legacy_cli_help or f"skip the {st.name} stage ({st.help})")
+
+
+def _apply_switches(cfg, args) -> None:
+    from .stages import apply_cli_switches
+
+    for msg in apply_cli_switches(cfg, args):
+        print(msg)
+
+
 def _force_utf8_stdio() -> None:
     """Windows consoles default to cp1252; our status glyphs (✓ ⚠ ≥ µ) would raise
     UnicodeEncodeError *after* the work is done, reporting a success as a crash. Reconfigure
@@ -128,12 +139,7 @@ def _run(args) -> int:
     from .pipeline import process_image
 
     cfg = load_config(args.config)
-    if getattr(args, "no_spots", False):
-        cfg.set("spots.enabled", False)
-        print("segmentation only: skipping spot detection (--no-spots)")
-    if getattr(args, "no_coloc", False):
-        cfg.set("coloc.enabled", False)
-        print("skipping PGL-1 granule surfacing + colocalization (--no-coloc)")
+    _apply_switches(cfg, args)
     out = Path(args.out)
     prov = provenance.write_manifest(out, config_hash=cfg.hash, config=cfg.as_dict())
     z_range = tuple(args.z_range) if args.z_range else None
@@ -154,12 +160,7 @@ def _batch(args) -> int:
     from .pipeline import process_image
 
     cfg = load_config(args.config)
-    if getattr(args, "no_spots", False):
-        cfg.set("spots.enabled", False)
-        print("segmentation only: skipping spot detection (--no-spots)")
-    if getattr(args, "no_coloc", False):
-        cfg.set("coloc.enabled", False)
-        print("skipping PGL-1 granule surfacing + colocalization (--no-coloc)")
+    _apply_switches(cfg, args)
     root = Path(args.folder)
     out_root = Path(args.out)
     glob = cfg.get("io.input_glob", "**/*.nd2")

@@ -1,0 +1,13 @@
+[
+  {"tag": "n2dryice_noHS_male_001", "nd2": "C:/Users/ryane/n2_dryice_local/20260625_N2_IF_dryice_pgl_syp3_lmn_noHS_male_001.nd2", "config": "config/config_n2dryice.yaml", "xy_stride": 1},
+  {"tag": "n2dryice_HS_male_010", "nd2": "C:/Users/ryane/n2_dryice_local/20260625_N2_IF_dryice_pgl_syp3_lmn_HS_male_010.nd2", "config": "config/config_n2dryice.yaml", "xy_stride": 1},
+  {"tag": "n2dryice_noHS_herm_002", "nd2": "C:/Users/ryane/n2_dryice_local/20260625_N2_IF_dryice_pgl_syp3_lmn_noHS_herm_002.nd2", "config": "config/config_n2dryice.yaml", "xy_stride": 1},
+  {"tag": "n2dryice_HS_herm_013", "nd2": "C:/Users/ryane/n2_dryice_local/20260625_N2_IF_dryice_pgl_syp3_lmn_HS_herm_013.nd2", "config": "config/config_n2dryice.yaml", "xy_stride": 1},
+  {"tag": "n2dryice_noHS_male_003", "nd2": "C:/Users/ryane/n2_dryice_local/20260625_N2_IF_dryice_pgl_syp3_lmn_noHS_male_003.nd2", "config": "config/config_n2dryice.yaml", "xy_stride": 1},
+  {"tag": "n2dryice_HS_male_017", "nd2": "C:/Users/ryane/n2_dryice_local/20260625_N2_IF_dryice_pgl_syp3_lmn_HS_male_017.nd2", "config": "config/config_n2dryice.yaml", "xy_stride": 1},
+  {"tag": "n2dryice_noHS_herm_004", "nd2": "C:/Users/ryane/n2_dryice_local/20260625_N2_IF_dryice_pgl_syp3_lmn_noHS_herm_004.nd2", "config": "config/config_n2dryice.yaml", "xy_stride": 1},
+  {"tag": "s4_n2dryice_noHS_male_001", "nd2": "C:/Users/ryane/n2_dryice_local/20260625_N2_IF_dryice_pgl_syp3_lmn_noHS_male_001.nd2", "config": "config/config_n2dryice.yaml", "xy_stride": 4},
+  {"tag": "s4_n2dryice_HS_herm_013", "nd2": "C:/Users/ryane/n2_dryice_local/20260625_N2_IF_dryice_pgl_syp3_lmn_HS_herm_013.nd2", "config": "config/config_n2dryice.yaml", "xy_stride": 4},
+  {"tag": "s4_n2dryice_noHS_male_001_nocoloc", "nd2": "C:/Users/ryane/n2_dryice_local/20260625_N2_IF_dryice_pgl_syp3_lmn_noHS_male_001.nd2", "config": "config/config_n2dryice.yaml", "xy_stride": 4, "flags": ["--no-coloc"]},
+  {"tag": "s4_n2dryice_noHS_male_001_nospots", "nd2": "C:/Users/ryane/n2_dryice_local/20260625_N2_IF_dryice_pgl_syp3_lmn_noHS_male_001.nd2", "config": "config/config_n2dryice.yaml", "xy_stride": 4, "flags": ["--no-spots"]}
+]
