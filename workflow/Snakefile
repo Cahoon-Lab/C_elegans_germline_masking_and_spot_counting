@@ -19,23 +19,25 @@ OUTPUT_ROOT = Path(config["output_root"]).resolve()
 GQ_CONFIG   = config["germquant_config"]
 XY_STRIDE   = int(config.get("xy_stride", 1))
 
-# Single source of truth for which files to process: the germquant config's io section,
-# so `germquant batch` and this Snakemake run never disagree on the file set. The workflow
-# config may still override (e.g. a one-off extra exclude) but defaults to the germquant config.
-_gq = yaml.safe_load(Path(GQ_CONFIG).read_text()).get("io", {})
+# Single source of truth for which files to process: the germquant config's io section (globs) and
+# qc.exclusions_file (study exclusions), through germquant.batch.discover_files, so `germquant batch`
+# and this Snakemake run never disagree on the file set. The workflow config may still override
+# input_glob / exclude_patterns for a one-off.
+_gq_all = yaml.safe_load(Path(GQ_CONFIG).read_text()) or {}
+_gq = _gq_all.get("io", {})
 INPUT_GLOB = config.get("input_glob", _gq.get("input_glob", "**/*.nd2"))
 EXCLUDE    = config.get("exclude_patterns", _gq.get("exclude_patterns", []))
 
 
 def _discover():
-    files = []
-    for p in sorted(INPUT_ROOT.glob(INPUT_GLOB)):
-        if p.suffix.lower() != ".nd2":
-            continue
-        name = p.name.lower()
-        if any(fnmatch.fnmatch(name, pat.lower()) for pat in EXCLUDE):
-            continue
-        files.append(p)
+    from germquant.batch import discover_files, load_exclusions
+    from germquant.config import _base_dir_for
+
+    excl = load_exclusions(_gq_all.get("qc", {}).get("exclusions_file"), _base_dir_for(Path(GQ_CONFIG)))
+    files, dropped = discover_files(INPUT_ROOT, INPUT_GLOB, EXCLUDE, excl)
+    for f, why in dropped:
+        if why.startswith("exclusions_file"):
+            print(f"[germquant] excluded by {why}: {f.name}")
     return files
 
 FILES = _discover()
@@ -69,16 +71,13 @@ rule process_one:
 
 
 rule batch_summary:
-    # collect every per-image image_summary into one table for R/Positron
+    # the same collect step as `germquant collect`: batch_<table>.csv for every table + batch_summary.csv
     input:
         expand(str(OUTPUT_ROOT / "_done" / "{idx}.done"), idx=IDX),
     output:
         str(OUTPUT_ROOT / "batch_summary.csv"),
     run:
-        import glob
-        import pandas as pd
+        from germquant.batch import collect
 
-        rows = [pd.read_csv(f) for f in glob.glob(str(OUTPUT_ROOT / "**" / "*__image_summary.csv"), recursive=True)]
-        df = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
-        df.to_csv(output[0], index=False)
-        print(f"[germquant] wrote {output[0]} ({len(df)} images)")
+        counts = collect(OUTPUT_ROOT)
+        print(f"[germquant] collected {counts} -> {output[0]}")

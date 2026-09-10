@@ -64,9 +64,32 @@ image is not the standard DAPI / SYP / RAD-51 panel, or when you want to process
 This processes every `.nd2` under the folder, including sub-folders, one image at a time, and
 skips the `10x` and `largeimage` overviews on its own. It writes one results sub-folder per image
 and a `batch_summary.csv` listing them all with their nucleus counts and QC flags. Many images can
-take hours; leave the window open. If it is interrupted, images that already finished keep their
-results folders, but running the same line again reprocesses everything, so point `--out` at a new
-folder or move the finished ones aside first.
+take hours; leave the window open. If it is interrupted, add `--resume` to the same line: images
+whose results folder already holds a completion marker written with the same config and the same
+stages are skipped, the rest are processed, and the summary is rebuilt from everything on disk.
+Without `--resume` the batch reprocesses everything.
+
+To drop particular gonads from a study (a fused carcass, a second germline limb), list substrings
+of their image ids in a JSON file and point `qc.exclusions_file` in the config at it; both `batch`
+and the Snakemake workflow read it, and the excluded files are named in the run manifest.
+
+### Stacking the results of a batch
+
+```
+.venv\Scripts\germquant.exe collect "C:\path\to\RESULTS_FOLDER"
+```
+
+writes `batch_nuclei.csv`, `batch_spots.csv`, `batch_granules.csv`, `batch_coloc.csv` and
+`batch_image_summary.csv` (every per-image table stacked, one file each) next to `batch_summary.csv`.
+Run it whenever you like, for example after reprocessing a few images.
+
+### Choosing what to measure (profiles)
+
+Instead of `--config config\config.yaml` you can name a profile: `--profile rad51_foci` (RAD-51 foci
+only) or `--profile segmentation_only` (nuclei and germline only). A profile is a short file in
+`config\profiles\` that switches stages on or off on top of `config\config.yaml`; every stage can also
+be switched off on the command line with `--no-<stage>` (`--no-spots`, `--no-coloc`, `--no-granule`,
+`--no-axis`, `--no-germline`).
 
 ### Segmentation only (no spot counting)
 

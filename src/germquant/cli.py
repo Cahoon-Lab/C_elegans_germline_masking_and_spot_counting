@@ -50,7 +50,14 @@ def main(argv: list[str] | None = None) -> int:
     _add_config_args(pb)
     pb.add_argument("--out", required=True)
     pb.add_argument("--xy-stride", type=int, default=1)
+    pb.add_argument("--resume", action="store_true",
+                    help="skip images whose results folder holds a completion marker written with the "
+                         "same config and the same stages (an interrupted batch picks up where it stopped)")
     _add_stage_switches(pb)
+
+    pc = sub.add_parser("collect", help="stack the per-image tables under a results folder into batch_<table>.csv "
+                                        "and rebuild batch_summary.csv (safe to rerun any time)")
+    pc.add_argument("results_root")
 
     pv = sub.add_parser("validate", help="compare pipeline output to hand-scored ground truth")
     pv.add_argument("--pred", help="pipeline CSV (counts/lengths mode)")
@@ -88,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         "info": lambda: _info(args.nd2),
         "run": lambda: _run(args),
         "batch": lambda: _batch(args),
+        "collect": lambda: _collect(args),
         "validate": lambda: _validate(args),
         "prep-training": lambda: _prep_training(args),
         "finetune": lambda: _finetune(args),
@@ -175,6 +183,7 @@ def _run(args) -> int:
 def _batch(args) -> int:
     import pandas as pd
 
+    from . import batch as B
     from .pipeline import process_image
 
     cfg = load_config(_resolve_config_path(args))
@@ -183,23 +192,32 @@ def _batch(args) -> int:
     out_root = Path(args.out)
     glob = cfg.get("io.input_glob", "**/*.nd2")
     excludes = cfg.get("io.exclude_patterns", [])
+    exclusions = B.load_exclusions(cfg.get("qc.exclusions_file"), cfg.base_dir)
 
-    files = [
-        f for f in sorted(root.glob(glob))
-        if not any(fnmatch.fnmatch(f.name.lower(), pat.lower()) for pat in excludes)
-    ]
+    files, dropped = B.discover_files(root, glob, excludes, exclusions)
+    for f, why in dropped:
+        if why.startswith("exclusions_file"):
+            print(f"excluded by {why}: {f.name}")
     if not files:
         print(f"No .nd2 files matched {glob} under {root}", file=sys.stderr)
         return 1
 
     prov = provenance.write_manifest(out_root, config_hash=cfg.hash, config=cfg.as_dict(),
-                                     extra={"n_files": len(files), "input_root": str(root)})
+                                     extra={"n_files": len(files), "input_root": str(root),
+                                            "excluded": [str(f) for f, _ in dropped]})
     print(f"Processing {len(files)} files -> {out_root}")
     summaries = []
     for i, f in enumerate(files, 1):
         rel = f.relative_to(root).parent
         out_dir = out_root / rel / f.stem
         print(f"[{i}/{len(files)}] {f.name}")
+        if getattr(args, "resume", False):
+            done, why = B.is_done(out_dir, f.stem, cfg)
+            if done:
+                print("    already done (completion marker matches); skipping")
+                continue
+            if why != "no completion marker":
+                print(f"    reprocessing: {why}")
         try:
             res = process_image(f, cfg, out_dir, xy_stride=args.xy_stride, prov=prov)
             isum = res["tables"]["image_summary"]
@@ -227,9 +245,24 @@ def _batch(args) -> int:
                 s["qc_flags"] = f"{s['qc_flags']};{flag}" if s["qc_flags"] else flag
 
     from .fsutil import long_path
-    pd.DataFrame(summaries).to_csv(long_path(out_root / "batch_summary.csv"), index=False)
+    if getattr(args, "resume", False):
+        # a resumed batch: the authoritative summary comes from every folder on disk, not this pass
+        counts = B.collect(out_root)
+        print(f"\nDone. Resumed batch collected: {counts}. Summary -> {out_root / 'batch_summary.csv'}")
+        return 0
+    pd.DataFrame(summaries, columns=B.SUMMARY_COLS).to_csv(long_path(out_root / "batch_summary.csv"), index=False)
     n_pass = sum(s["qc_pass"] for s in summaries)
     print(f"\nDone. {n_pass}/{len(files)} passed QC. Summary -> {out_root / 'batch_summary.csv'}")
+    return 0
+
+
+def _collect(args) -> int:
+    from . import batch as B
+
+    counts = B.collect(args.results_root)
+    for k, v in counts.items():
+        print(f"  {k}: {v} rows")
+    print(f"  -> {Path(args.results_root) / 'batch_<table>.csv'} and batch_summary.csv")
     return 0
 
 
