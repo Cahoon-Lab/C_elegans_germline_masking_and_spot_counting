@@ -13,7 +13,29 @@ from pathlib import Path
 
 from .fsutil import long_path
 
-_TOOLS = ["germquant", "nd2", "numpy", "scipy", "scikit-image", "pandas", "cellpose", "spotmax", "torch"]
+_TOOLS = ["germquant", "nd2", "numpy", "scipy", "scikit-image", "pandas", "cellpose", "spotmax", "torch",
+          "cellacdc", "cupy", "skan", "tifffile", "snakemake"]
+
+_FILE_SHA_CACHE: dict[tuple[str, float, int], str] = {}
+
+
+def file_sha256(path: str | Path | None) -> str:
+    """sha256 of a file (the Cellpose model), cached on (path, mtime, size) so a batch hashes a 1 GB
+    model once. 'absent' when the path is missing or a directory / a bare model name such as 'cpsam'."""
+    if not path:
+        return "absent"
+    p = Path(path)
+    if not p.is_file():
+        return "absent"
+    st = p.stat()
+    key = (str(p.resolve()), st.st_mtime, st.st_size)
+    if key not in _FILE_SHA_CACHE:
+        h = hashlib.sha256()
+        with open(long_path(p), "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 24), b""):
+                h.update(chunk)
+        _FILE_SHA_CACHE[key] = h.hexdigest()
+    return _FILE_SHA_CACHE[key]
 
 
 def _repo_root() -> Path | None:
@@ -94,6 +116,28 @@ def write_manifest(out_dir: str | Path, *, config_hash: str, config: dict, extra
     with open(long_path(out_dir / "run_manifest.json"), "w", encoding="utf-8") as fh:
         fh.write(json.dumps(manifest, indent=2, default=str))
     return manifest
+
+
+def write_done_marker(out_dir: str | Path, image_id: str, *, config_hash: str, enabled_stages: list[str],
+                      stage_hashes: dict[str, str]) -> Path:
+    """``<image_id>__done.json``: written as the very last act of a successful process_image, so its
+    presence (with a matching config_hash and enabled stage set) means every output of that run is on
+    disk. Batch resume keys on it; a folder without it is reprocessed."""
+    out_dir = Path(out_dir)
+    p = out_dir / f"{image_id}__done.json"
+    with open(long_path(p), "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"image_id": image_id, "config_hash": config_hash, "enabled_stages": enabled_stages,
+                             "stage_hashes": stage_hashes, "finished": run_timestamp()}, indent=1))
+    return p
+
+
+def read_done_marker(out_dir: str | Path, image_id: str) -> dict | None:
+    p = Path(out_dir) / f"{image_id}__done.json"
+    try:
+        with open(long_path(p), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
 
 
 def _safe_version(name: str) -> str:

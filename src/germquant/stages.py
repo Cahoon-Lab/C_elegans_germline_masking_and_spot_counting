@@ -41,27 +41,33 @@ class Stage:
     help: str
     default_from: str | None = None   # another stage's key whose value is the default when ours is absent
     legacy_cli_help: str | None = None
+    config_sections: tuple[str, ...] = ()   # top-level config sections whose text feeds the stage sub-hash
 
 
 STAGES: tuple[Stage, ...] = (
-    Stage("read", None, True, ("dna",), False, "read the .nd2, resolve channel roles, parse the sample"),
-    Stage("segment", None, True, (), False, "Cellpose 3D nucleus segmentation (falls back to classical)"),
+    Stage("read", None, True, ("dna",), False, "read the .nd2, resolve channel roles, parse the sample",
+          config_sections=("io", "metadata")),
+    Stage("segment", None, True, (), False, "Cellpose 3D nucleus segmentation (falls back to classical)",
+          config_sections=("segmentation",)),
     Stage("measure", None, True, (), False, "3D regionprops + per-role mean intensities per nucleus"),
     Stage("germline", "germline.enabled", True, ("central_element",), True,
-          "drop nuclei outside the gonad (SYP-seeded connected component)"),
+          "drop nuclei outside the gonad (SYP-seeded connected component)", config_sections=("germline",)),
     Stage("axis", "axis.enabled", True, (), True,
-          "principal-curve germline axis -> distal->proximal position per nucleus"),
+          "principal-curve germline axis -> distal->proximal position per nucleus", config_sections=("axis",)),
     Stage("spots", "spots.enabled", True, ("foci",), True,
           "SpotMAX spot counting in the `foci` channel (RAD-51)",
-          legacy_cli_help="segmentation only: skip RAD-51/SpotMAX spot detection (fast, never wedges)"),
+          legacy_cli_help="segmentation only: skip RAD-51/SpotMAX spot detection (fast, never wedges)",
+          config_sections=("spots",)),
     Stage("granule", "granule.enabled", True, ("granule", "central_element"), True,
-          "PGL-1 granule segmentation in the perinuclear region (+ lamin shell)", default_from="coloc.enabled"),
+          "PGL-1 granule segmentation in the perinuclear region (+ lamin shell)", default_from="coloc.enabled",
+          config_sections=("granule", "coloc")),
     Stage("coloc", "coloc.enabled", True, ("granule", "central_element"), True,
           "SYP <-> PGL-1 colocalization (shell voxel, partition coefficient, operands)",
-          legacy_cli_help="skip PGL-1 granule surfacing + SYP<->PGL-1 colocalization stage"),
-    Stage("qc", None, True, (), False, "QC flags and pass/fail"),
-    Stage("render", "render.montage", True, (), False, "montage PNG"),
-    Stage("write", None, True, (), False, "tables, label images, masks, manifest"),
+          legacy_cli_help="skip PGL-1 granule surfacing + SYP<->PGL-1 colocalization stage",
+          config_sections=("coloc", "sc", "granule")),
+    Stage("qc", None, True, (), False, "QC flags and pass/fail", config_sections=("qc",)),
+    Stage("render", "render.montage", True, (), False, "montage PNG", config_sections=("render",)),
+    Stage("write", None, True, (), False, "tables, label images, masks, manifest", config_sections=("output",)),
 )
 
 BY_NAME: dict[str, Stage] = {s.name: s for s in STAGES}
@@ -121,6 +127,36 @@ def run_stage(name: str, fn: Callable[[], Any], *, flags: list[str], outcomes: d
         return fail_value
     outcomes[name] = Outcome("ran", elapsed_s=time.perf_counter() - t0, flags=flags[n_before:])
     return result
+
+
+def stage_hashes(cfg, role_to_idx: dict, extras: dict[str, str], model_sha: str = "") -> dict[str, str]:
+    """Per-stage provenance sub-hash: sha256 (12 hex) of the stage's resolved config sections, the
+    channel roles it consumes, the versions of the tools it depends on, and (segment) the Cellpose model
+    file digest. Lets two runs with different whole-config hashes be recognised as identical for one stage
+    (e.g. the RAD-51 counts of a run that only switched coloc off). Written to run_manifest.json and
+    <image_id>__stages.json; never a table column."""
+    import hashlib
+    import json
+
+    out = {}
+    for st in STAGES:
+        payload = {
+            "config": {sec: cfg.get(sec, None) for sec in st.config_sections},
+            "enabled": stage_enabled(cfg, st.name),
+            "roles": {r: role_to_idx.get(r) for r in st.required_roles},
+            "tools": {k: extras.get(k, "not-installed") for k in _STAGE_TOOLS.get(st.name, ())},
+        }
+        if st.name == "segment":
+            payload["model_sha256"] = model_sha
+        out[st.name] = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:12]
+    return out
+
+
+_STAGE_TOOLS = {
+    "read": ("nd2",), "segment": ("cellpose", "torch"), "measure": ("scikit-image",),
+    "spots": ("spotmax", "cellacdc", "cupy"), "granule": ("scikit-image", "scipy"),
+    "coloc": ("scikit-image", "scipy"),
+}
 
 
 def cli_switches() -> list[Stage]:

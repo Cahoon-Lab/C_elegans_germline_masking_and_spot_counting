@@ -38,7 +38,8 @@ from .io import parse_sample, read_nd2_metadata, read_stack
 from .measure import measure_objects
 from .render import make_montage
 from .segment import segment_nuclei
-from .stages import Outcome, missing_roles, run_stage, stage_enabled
+from .stages import STAGES, Outcome, missing_roles, run_stage, stage_enabled
+from .stages import stage_hashes as stage_hashes_fn
 
 log = logging.getLogger(__name__)
 
@@ -72,7 +73,18 @@ def process_image(
     dapi_present = role_to_idx.get("dna") is not None
 
     sample = parse_sample(nd2_path, cfg.get("metadata.filename_regex"), cfg.get("metadata.defaults"))
-    prov = prov or provenance.write_manifest(out_dir, config_hash=cfg.hash, config=cfg.as_dict())
+    # per-stage provenance (sub-hashes, model digest, run geometry): additive fields on the manifest and
+    # the stage record, never table columns, so no CSV header changes.
+    model_path = cfg.get("segmentation.nuclei.cellpose_model")
+    model_sha = provenance.file_sha256(
+        (cfg.base_dir / model_path) if model_path and not Path(str(model_path)).is_absolute()
+        and (cfg.base_dir / str(model_path)).is_file() else model_path)
+    stage_hashes = stage_hashes_fn(cfg, role_to_idx, provenance.tool_versions(), model_sha)
+    run_geometry = {"xy_stride": int(xy_stride), "z_range": list(z_range) if z_range else None,
+                    "stage_hashes": stage_hashes, "model_sha256": model_sha,
+                    "enabled_stages": [s.name for s in STAGES if stage_enabled(cfg, s.name)]}
+    prov = prov or provenance.write_manifest(out_dir, config_hash=cfg.hash, config=cfg.as_dict(),
+                                             extra=run_geometry)
 
     shared = {
         "image_id": sample["image_id"], "file_path": str(nd2_path),
@@ -328,25 +340,32 @@ def process_image(
             title=f"{sample['image_id']}  [{sample['sex']}/{sample['treatment']}]  n={n_nuclei}",
         )
 
-    def _dump_stage_record() -> dict:
+    def _dump_stage_record(complete: bool) -> dict:
         # per-stage outcome record (ran / skipped + reason / failed + error, elapsed, flags); advisory,
         # so it can never fail a finished run, and written even when the montage raises.
         rec = {name: oc.as_dict() for name, oc in outcomes.items()}
         try:
             with open(long_path(out_dir / f"{sample['image_id']}__stages.json"), "w", encoding="utf-8") as fh:
-                json.dump({"image_id": sample["image_id"], "config_hash": cfg.hash, "stages": rec}, fh, indent=1)
+                json.dump({"image_id": sample["image_id"], "config_hash": cfg.hash, "complete": complete,
+                           **run_geometry, "stages": rec}, fh, indent=1)
         except Exception as e:  # noqa: BLE001 - the record is advisory
             log.warning("could not write the stage record: %s", e)
         return rec
 
     # write and render are fatal exactly as before the registry existed (an unwritten table or a broken
     # montage is a real failure of the image); the stage record still lands for post-mortems.
+    complete = False
     try:
         run_stage("write", _write, flags=flags, outcomes=outcomes, fatal=True)
         run_stage("render", _render, flags=flags, outcomes=outcomes, fatal=True,
                   enabled=stage_enabled(cfg, "render"), skip_reason="disabled")
+        complete = True
     finally:
-        stage_record = _dump_stage_record()
+        stage_record = _dump_stage_record(complete)
+    # completion marker: the LAST file written, so `germquant batch --resume` can trust a folder that has
+    # it (same config_hash and the same enabled stage set) and reprocess one that does not.
+    provenance.write_done_marker(out_dir, sample["image_id"], config_hash=cfg.hash,
+                                 enabled_stages=run_geometry["enabled_stages"], stage_hashes=stage_hashes)
 
     log.info("%s: %d nuclei, %d germline, spots=%d, qc_pass=%s",
              sample["image_id"], n_nuclei, n_germline_nuclei, len(spots), qc_pass)

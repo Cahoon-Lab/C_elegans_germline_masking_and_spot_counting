@@ -91,11 +91,47 @@ class _Node:
         return f"_Node({self._d!r})"
 
 
+def _base_dir_for(path: Path) -> Path:
+    """The directory that relative paths in a config (channel map, model) resolve against: the parent
+    of the nearest ancestor directory named ``config`` (so config/config.yaml and
+    config/profiles/x.yaml both resolve against the repo root), else the file's own directory."""
+    for d in path.resolve().parents:
+        if d.name == "config":
+            return d.parent
+    return path.parent
+
+
+def _deep_merge(base: dict, overlay: dict) -> dict:
+    out = dict(base)
+    for k, v in overlay.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
 def load_config(path: str | Path) -> Config:
+    """Load a config file. A file may name a base with a top-level ``extends: <path>`` (relative to the
+    file's directory, or to the config dir): the base is loaded first and the file's own sections are
+    deep-merged over it (a "profile"). Hash rule: a file WITHOUT ``extends`` hashes exactly as it always
+    has (its raw text plus the channel-map text plus runtime overrides), so existing runs keep
+    reproducing; a profile hashes the base text plus its own text plus the channel-map text."""
     path = Path(path)
     raw_text = path.read_text()
-    data = yaml.safe_load(raw_text)
-    base_dir = path.parent.parent if path.parent.name == "config" else path.parent
+    data = yaml.safe_load(raw_text) or {}
+    base_dir = _base_dir_for(path)
+    hash_text = raw_text
+
+    ext = data.pop("extends", None)
+    if ext:
+        cand = [path.parent / ext, base_dir / "config" / ext, base_dir / ext]
+        ext_path = next((c for c in cand if c.is_file()), None)
+        if ext_path is None:
+            raise FileNotFoundError(f"{path}: extends {ext!r} not found (tried {[str(c) for c in cand]})")
+        base = load_config(ext_path)
+        data = _deep_merge(base.as_dict(), data)
+        hash_text = base._raw_text + "\x00extends\x00" + raw_text
 
     cm_rel = data.get("io", {}).get("channel_map")
     if cm_rel is None:
@@ -104,5 +140,5 @@ def load_config(path: str | Path) -> Config:
     channel_map = ChannelMap.from_yaml(cm_path)
     cm_text = cm_path.read_text() if cm_path.exists() else ""
 
-    return Config(data, base_dir=base_dir, channel_map=channel_map, raw_text=raw_text,
+    return Config(data, base_dir=base_dir, channel_map=channel_map, raw_text=hash_text,
                   channel_map_text=cm_text)

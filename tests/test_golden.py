@@ -78,7 +78,9 @@ def test_synthetic_golden(tmp_path, request, name):
                                   "existing runs would no longer reproduce (roadmap rule)")
     for t, f in files.items():
         got, ref = _read(f), pd.read_csv(gold / f"{t}.csv", low_memory=False, float_precision="round_trip")
-        assert list(got.columns) == list(ref.columns), f"{t}: columns changed"
+        # append-only schema rule: the golden's columns must be an exact prefix of the current table
+        assert list(got.columns)[:len(ref.columns)] == list(ref.columns), \
+            f"{t}: existing columns changed (only appending at the end is allowed)"
         assert len(got) == len(ref), f"{t}: row count {len(got)} vs {len(ref)}"
         for col in ref.columns:
             a, b = got[col], ref[col]

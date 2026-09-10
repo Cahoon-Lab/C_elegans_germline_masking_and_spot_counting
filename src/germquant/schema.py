@@ -1,6 +1,13 @@
 """Tidy output schema — long format, one row per object. All lengths µm, volumes µm³,
 intensities raw a.u. Every table carries the shared metadata block so R/Positron joins on
 image_id (+ nucleus_id) and facets by genotype/sex/treatment.
+
+Growth rule (docs/ROADMAP_modular_pipeline.md): the schema is APPEND-ONLY. A new stage appends its
+columns at the end of an existing table or adds a new table in STAGE_TABLES; existing columns are never
+renamed, reordered, re-typed or removed, so every table written by an older commit stays a prefix of
+the current one and the golden regression gate (tests/test_golden.py, scripts/regression_diff.py) can
+tell "columns appended" from "values changed". Every declared table is written on every run, empty when
+its stage is off, so consumers never hit a missing file.
 """
 
 # Stamped onto every row of every table (provenance + design).
@@ -80,4 +87,12 @@ TABLES = {
     "granules": GRANULES,
     "coloc": COLOC,
     "image_summary": IMAGE_SUMMARY,
+}
+
+# which stage owns which table (nuclei and image_summary are shared: every stage may append columns).
+# A new optional stage registers its table here so it is written (empty) even when the stage is off.
+STAGE_TABLES = {
+    "spots": ["spots"],
+    "granule": ["granules"],
+    "coloc": ["coloc"],
 }

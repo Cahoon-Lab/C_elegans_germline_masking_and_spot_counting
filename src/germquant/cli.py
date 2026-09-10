@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
 
     pr = sub.add_parser("run", help="process a single .nd2")
     pr.add_argument("nd2")
-    pr.add_argument("--config", required=True)
+    _add_config_args(pr)
     pr.add_argument("--out", required=True)
     pr.add_argument("--xy-stride", type=int, default=1, help="downsample xy for a quick test")
     pr.add_argument("--z-range", type=int, nargs=2, default=None, metavar=("Z0", "Z1"))
@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
 
     pb = sub.add_parser("batch", help="process every .nd2 under a folder, mirroring the tree")
     pb.add_argument("folder")
-    pb.add_argument("--config", required=True)
+    _add_config_args(pb)
     pb.add_argument("--out", required=True)
     pb.add_argument("--xy-stride", type=int, default=1)
     _add_stage_switches(pb)
@@ -95,6 +95,24 @@ def main(argv: list[str] | None = None) -> int:
     }[args.cmd]()
 
 
+def _add_config_args(parser) -> None:
+    g = parser.add_mutually_exclusive_group(required=True)
+    g.add_argument("--config", help="config yaml (config/config.yaml, or any file; may use `extends:`)")
+    g.add_argument("--profile", help="name of a profile in config/profiles/<NAME>.yaml (a small overlay "
+                                     "on config/config.yaml that switches the stages a study needs)")
+
+
+def _resolve_config_path(args) -> Path:
+    if getattr(args, "profile", None):
+        root = provenance._repo_root() or Path.cwd()
+        p = root / "config" / "profiles" / f"{args.profile}.yaml"
+        if not p.is_file():
+            have = sorted(x.stem for x in (root / "config" / "profiles").glob("*.yaml"))
+            raise SystemExit(f"no profile {args.profile!r} at {p}; available: {have}")
+        return p
+    return Path(args.config)
+
+
 def _add_stage_switches(parser) -> None:
     """One generated ``--no-<stage>`` per switchable stage in `germquant.stages.STAGES` (so
     ``--no-spots`` and ``--no-coloc`` keep working and new optional stages get a switch for free)."""
@@ -138,7 +156,7 @@ def _info(nd2: str) -> int:
 def _run(args) -> int:
     from .pipeline import process_image
 
-    cfg = load_config(args.config)
+    cfg = load_config(_resolve_config_path(args))
     _apply_switches(cfg, args)
     out = Path(args.out)
     prov = provenance.write_manifest(out, config_hash=cfg.hash, config=cfg.as_dict())
@@ -159,7 +177,7 @@ def _batch(args) -> int:
 
     from .pipeline import process_image
 
-    cfg = load_config(args.config)
+    cfg = load_config(_resolve_config_path(args))
     _apply_switches(cfg, args)
     root = Path(args.folder)
     out_root = Path(args.out)

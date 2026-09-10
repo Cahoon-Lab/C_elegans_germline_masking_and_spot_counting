@@ -1,0 +1,8 @@
+# Profile: nucleus segmentation + germline isolation only (Imaris surfaces), no spots, no coloc.
+# Equivalent to `--no-spots --no-coloc` but as a named recipe with its own stable config_hash.
+extends: config.yaml
+
+spots:
+  enabled: false
+coloc:
+  enabled: false
