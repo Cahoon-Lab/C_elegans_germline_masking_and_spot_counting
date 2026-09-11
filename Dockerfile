@@ -17,11 +17,17 @@ COPY src ./src
 # loads the channel map by a path relative to the config dir, and the Snakefile lives here.
 COPY config ./config
 COPY workflow ./workflow
+COPY constraints ./constraints
 
-# Explicit cu128 torch wheel FIRST (do not let resolvers pick a CPU/older build),
-# then the package + GPU/spots/workflow extras.
-RUN pip install --index-url https://download.pytorch.org/whl/cu128 "torch>=2.7" \
-    && pip install ".[gpu,workflow]" spotmax cellacdc
+# Pinned to the validated workstation environment (constraints/desktop-2026-09.txt) so a container
+# run resolves the same package versions the goldens were made with. Explicit cu128 torch wheel FIRST
+# (do not let resolvers pick a CPU/older build), then the package with the GPU / spots / SC-tracing /
+# workflow extras.
+RUN pip install --index-url https://download.pytorch.org/whl/cu128 "torch==2.11.0+cu128" "torchvision==0.26.0" \
+    && pip install -c constraints/desktop-2026-09.txt ".[gpu,sc,workflow]" spotmax cellacdc cupy-cuda12x
+
+# profiles are found from this checkout when the working directory is elsewhere (`--profile NAME`)
+ENV GERMQUANT_CONFIG_ROOT=/opt/germquant
 
 # build-time smoke check (imports only — a GPU is not attached during `docker build`).
 RUN python -c "import germquant, cellpose; print('germquant ok')"

@@ -130,12 +130,20 @@ def _add_config_args(parser) -> None:
 
 def _resolve_config_path(args) -> Path:
     if getattr(args, "profile", None):
-        root = provenance._repo_root() or Path.cwd()
-        p = root / "config" / "profiles" / f"{args.profile}.yaml"
-        if not p.is_file():
-            have = sorted(x.stem for x in (root / "config" / "profiles").glob("*.yaml"))
-            raise SystemExit(f"no profile {args.profile!r} at {p}; available: {have}")
-        return p
+        import os
+
+        roots = [r for r in (provenance._repo_root(), Path.cwd(),
+                             Path(os.environ["GERMQUANT_CONFIG_ROOT"]) if os.environ.get("GERMQUANT_CONFIG_ROOT") else None)
+                 if r is not None]
+        tried = []
+        for root in roots:
+            p = root / "config" / "profiles" / f"{args.profile}.yaml"
+            tried.append(p)
+            if p.is_file():
+                return p
+        have = sorted({x.stem for r in roots for x in (r / "config" / "profiles").glob("*.yaml")})
+        raise SystemExit(f"no profile {args.profile!r}; looked in {[str(t) for t in tried]}; available: {have} "
+                         f"(set GERMQUANT_CONFIG_ROOT to the checkout that holds config/profiles)")
     return Path(args.config)
 
 

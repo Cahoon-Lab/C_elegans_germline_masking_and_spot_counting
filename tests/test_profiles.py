@@ -79,6 +79,34 @@ def test_out_of_repo_profile_inherits_base_relative_paths(tmp_path):
     assert Path(str(resolve_model_path(cfg))).is_absolute()
 
 
+def test_models_env_override_and_profile_root(tmp_path, monkeypatch):
+    from germquant.pipeline import resolve_model_path
+
+    cfg = load_config(ROOT / "config" / "config.yaml")
+    rel = Path(str(cfg.get("segmentation.nuclei.cellpose_model")))
+    assert not rel.is_absolute()
+    # the HPC binding: the model lives under $GERMQUANT_MODELS with or without the leading 'models/'
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / rel.name).write_bytes(b"m")
+    monkeypatch.setenv("GERMQUANT_MODELS", str(tmp_path))
+    assert Path(str(resolve_model_path(cfg))) == tmp_path / "models" / rel.name
+    monkeypatch.delenv("GERMQUANT_MODELS")
+    # --profile lookup falls back to GERMQUANT_CONFIG_ROOT (containers, non-editable installs)
+    from germquant import cli
+
+    class A:
+        profile = "rad51_foci"
+
+    monkeypatch.setenv("GERMQUANT_CONFIG_ROOT", str(ROOT))
+    assert cli._resolve_config_path(A()) == ROOT / "config" / "profiles" / "rad51_foci.yaml"
+
+    class B:
+        profile = "does_not_exist"
+
+    with pytest.raises(SystemExit, match="does_not_exist"):
+        cli._resolve_config_path(B())
+
+
 def test_empty_profile_section_raises(tmp_path):
     p = tmp_path / "study.yaml"
     p.write_text(f"extends: {(ROOT / 'config' / 'config.yaml').as_posix()}\ncoloc:\n  # nothing here\n")

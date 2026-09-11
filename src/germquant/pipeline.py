@@ -53,13 +53,21 @@ _ENVELOPE_KEYS = {
 
 def resolve_model_path(cfg):
     """The Cellpose model the config names, resolved against the config's base_dir when it is a relative
-    path to an existing file (so a profile outside the repo still finds models/...); bare built-in names
-    such as 'cpsam' pass through unchanged."""
+    path to an existing file (so a profile outside the repo still finds models/...), or against
+    ``$GERMQUANT_MODELS`` (the HPC / container binding: the config's ``models/...`` path is looked up
+    under it, with or without the leading ``models/``); bare built-in names such as 'cpsam' pass through."""
     model_path = cfg.get("segmentation.nuclei.cellpose_model")
     if not model_path:
         return model_path
     p = Path(str(model_path))
-    if not p.is_absolute() and (cfg.base_dir / p).is_file():
+    if p.is_absolute():
+        return model_path
+    root = os.environ.get("GERMQUANT_MODELS")
+    if root:
+        for cand in (Path(root) / p, Path(root) / Path(*p.parts[1:]) if len(p.parts) > 1 and p.parts[0] == "models" else None):
+            if cand is not None and cand.is_file():
+                return cand
+    if (cfg.base_dir / p).is_file():
         return cfg.base_dir / p
     return model_path
 
