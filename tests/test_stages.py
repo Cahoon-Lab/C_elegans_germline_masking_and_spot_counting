@@ -15,8 +15,8 @@ from germquant.stages import STAGES, Outcome, apply_cli_switches, run_stage, sta
 
 def test_registry_is_ordered_and_unique():
     names = [s.name for s in STAGES]
-    assert names == ["read", "segment", "measure", "germline", "axis", "spots", "sc_trace", "granule",
-                     "coloc", "qc", "render", "write"]
+    assert names == ["read", "acquisition", "segment", "measure", "germline", "envelope", "audit", "axis",
+                     "spots", "sc_trace", "granule", "coloc", "qc", "render", "write"]
     assert len(set(names)) == len(names)
     keys = [s.config_key for s in STAGES if s.config_key]
     assert len(set(keys)) == len(keys)

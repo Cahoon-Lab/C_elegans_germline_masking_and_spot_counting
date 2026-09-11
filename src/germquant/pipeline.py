@@ -43,6 +43,13 @@ from .stages import stage_hashes as stage_hashes_fn
 
 log = logging.getLogger(__name__)
 
+# envelope stage parameters: config key suffix -> code default (the August analysis constants)
+_ENVELOPE_KEYS = {
+    "band_um": 2.0, "smooth_um": 0.15, "volume_ratio_min": 1.0, "volume_ratio_max": 3.0,
+    "ring_smooth_um": 0.25, "ring_shell_um": 0.4, "ring_ratio_max": 0.97, "shell_over_thr_max": 0.75,
+    "territory_dilate_um": 4.0, "cyto_um": 2.5,
+}
+
 
 def process_image(
     nd2_path: str | Path,
@@ -99,6 +106,20 @@ def process_image(
     }
     outcomes["read"] = Outcome("ran", elapsed_s=time.perf_counter() - t_read, flags=list(flags))
 
+    # ---- acquisition metadata (exposure / laser power per role, from the nd2 description) ----
+    acq_fields: dict = {}
+
+    def _acquisition():
+        from .io.acquisition import acquisition_fields
+
+        return acquisition_fields(nd2_path, list(meta["channel_names"]), role_to_idx)
+
+    acq_on = stage_enabled(cfg, "acquisition")
+    acq_res = run_stage("acquisition", _acquisition, flags=flags, outcomes=outcomes, enabled=acq_on,
+                        skip_reason="disabled")
+    if acq_res is not None:
+        acq_fields = acq_res
+
     # ---- segment nuclei (always on; a failure here is fatal, as it always was) ----
     def _segment():
         dna = stack.channel(role_to_idx.get("dna"))
@@ -149,6 +170,54 @@ def process_image(
     if germ_res is not None:
         excluded, nuclei = germ_res
     n_germline_nuclei = int(len(nuclei))
+
+    # ---- lamin envelope masks (seeded watershed on LMN-1), ring test, territories ----
+    env_ctx = None
+    env_summary_fields: dict = {}
+    lamin_idx = role_to_idx.get("lamin")
+
+    def _envelope():
+        nonlocal nuclei
+        from .envelope import run_envelope
+
+        ids = [int(v) for v in nuclei["nucleus_id"].tolist()]
+        params = {k: cfg.get(f"envelope.{k}", v) for k, v in _ENVELOPE_KEYS.items()}
+        ctx = run_envelope(labels, ids, stack.data[lamin_idx], spacing, params)
+        nuclei = nuclei.merge(ctx["per_nucleus"], on="nucleus_id", how="left")
+        flags.append(f"envelope:fallback_n={ctx['summary']['n_envelope_fallback']}")
+        if ctx["summary"]["n_no_envelope"]:
+            flags.append(f"envelope:no_envelope_n={ctx['summary']['n_no_envelope']}")
+        return ctx
+
+    env_on = stage_enabled(cfg, "envelope")
+    env_ctx = run_stage("envelope", _envelope, flags=flags, outcomes=outcomes,
+                        enabled=env_on and lamin_idx is not None and n_germline_nuclei > 0,
+                        skip_reason=("disabled" if not env_on else
+                                     "no lamin channel" if lamin_idx is None else "no germline nuclei"))
+    if env_ctx is not None:
+        env_summary_fields = dict(env_ctx["summary"])
+
+    # ---- mask audit (lamin-only nuclei missed by the labels; labels with no envelope) ----
+    audit_table = pd.DataFrame(columns=schema.MASK_AUDIT)
+    audit_summary_fields: dict = {}
+    audit_ctx = None
+
+    def _audit():
+        from .qc_audit import run_audit
+
+        ids = [int(v) for v in nuclei["nucleus_id"].tolist()]
+        return run_audit(labels, ids, stack.data[lamin_idx], spacing, env_ctx,
+                         ring_smooth_um=float(cfg.get("envelope.ring_smooth_um", 0.25)),
+                         missed_cov_max=float(cfg.get("audit.missed_cov_max", 0.15)))
+
+    audit_on = stage_enabled(cfg, "audit")
+    audit_ctx = run_stage("audit", _audit, flags=flags, outcomes=outcomes,
+                          enabled=audit_on and env_ctx is not None,
+                          skip_reason="disabled" if not audit_on else "envelope stage did not run")
+    if audit_ctx is not None:
+        audit_table = audit_ctx["table"]
+        audit_summary_fields = dict(audit_ctx["summary"])
+        flags.append(f"audit:missed_nuclei={audit_ctx['summary']['n_missed_nuclei']}")
 
     # ---- linearize axis (principal-curve centerline -> per-nucleus distal->proximal position) ----
     axis_conf = float("nan")
@@ -338,7 +407,8 @@ def process_image(
         if "axis_position_um" in nuclei and not nuclei.empty else float("nan"),
         "qc_pass": qc_pass, "qc_flags": ";".join(qc_all),
         "segmentation_method": seg_method, "axis_confidence": axis_conf,
-        **coloc_summary_fields, **sc_summary_fields,
+        **coloc_summary_fields, **sc_summary_fields, **env_summary_fields, **audit_summary_fields,
+        **acq_fields,
     }])
 
     # ---- write outputs ----
@@ -365,7 +435,7 @@ def process_image(
         nuclei = pd.concat([nuclei, excluded], ignore_index=True)
     tables = {"nuclei": nuclei, "spots": spots, "granules": granules,
               "coloc": coloc, "image_summary": image_summary,
-              "sc_tracks": sc_tracks, "sc_per_nucleus": sc_per_nuc}
+              "sc_tracks": sc_tracks, "sc_per_nucleus": sc_per_nuc, "mask_audit": audit_table}
 
     def _write():
         _write_tables(tables, shared, out_dir, sample["image_id"], cfg.get("output.formats", ["csv"]))
@@ -382,8 +452,20 @@ def process_image(
             m = masks.get(mname)
             if m is not None and m.any():
                 _save_mask_image(m, spacing, out_dir / f"{sample['image_id']}__{mname}.tif")
+        if env_ctx is not None and cfg.get("output.write_envelope_labels", True):
+            _save_labels(env_ctx["envelope_labels"], out_dir / f"{sample['image_id']}__envelope_labels.tif")
 
     def _render():
+        if audit_ctx is not None and env_ctx is not None:
+            from .qc_audit import write_audit_overlay
+
+            sl = env_ctx["crop"]
+            ids = [int(v) for v in nuclei["nucleus_id"].tolist()]
+            write_audit_overlay(out_dir / f"{sample['image_id']}__mask_audit.png",
+                                stack.data[role_to_idx["dna"]][sl] if role_to_idx.get("dna") is not None else stack.data[0][sl],
+                                stack.data[lamin_idx][sl], labels[sl], ids, env_ctx["envelope_labels"][sl],
+                                audit_ctx["candidate_labels"], audit_ctx["missed_ids"], env_ctx["no_envelope_ids"],
+                                title=sample["image_id"])
         excl_ids = set(excluded["nucleus_id"]) if not excluded.empty else None
         make_montage(
             stack, labels, role_to_idx, out_dir / f"{sample['image_id']}__montage.png",

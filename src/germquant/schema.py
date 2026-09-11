@@ -29,6 +29,17 @@ NUCLEI = [
     # SC tracer (sc_trace stage, off by default): total SC length (recoverable), fragment count as a
     # LOWER BOUND (strands overlap in 3D), SYP-intensity-CV fragmentation index, expected SC number
     "sc_total_length_um", "sc_n_fragments_lb", "sc_fragmentation_index", "sc_expected_n_tracks",
+    # lamin envelope (envelope stage, off by default): watershed envelope volume and its ratio to the DAPI
+    # volume, whether the volume gate fell back to the DAPI label, the ring test (no envelope = sperm /
+    # somatic / debris) and the 2D territory the nucleus belongs to
+    "envelope_volume_um3", "envelope_vol_ratio", "envelope_fallback", "ring_ratio", "shell_over_thr",
+    "has_envelope", "territory_id",
+]
+
+# mask audit (audit stage): one row per lamin-only nucleus candidate and per germline label
+MASK_AUDIT = [
+    "kind", "object_id", "vol_um3", "z_um", "y_um", "x_um", "cov_germ_label", "cov_any_label",
+    "cov_envelope", "ring_shell", "ring_inside", "ring_ratio", "shell_over_thr", "no_envelope",
 ]
 
 # one row per SC track/fragment (sc_trace stage)
@@ -98,6 +109,10 @@ IMAGE_SUMMARY = [
     "frac_granules_overlapping_sc_ribbon",
     # SC tracer gonad means over germline nuclei (sc_trace stage)
     "mean_sc_total_length_um", "mean_sc_fragmentation_index", "mean_sc_n_fragments_lb",
+    # envelope stage
+    "n_envelope_fallback", "envelope_vol_ratio", "n_no_envelope", "no_envelope_vol_frac", "n_territories", "ring_thr",
+    # audit stage
+    "n_lamin_candidates", "n_missed_nuclei", "n_missed_unlabelled",
 ]
 
 TABLES = {
@@ -108,6 +123,7 @@ TABLES = {
     "image_summary": IMAGE_SUMMARY,
     "sc_tracks": SC_TRACKS,
     "sc_per_nucleus": SC_PER_NUCLEUS,
+    "mask_audit": MASK_AUDIT,
 }
 
 # which stage owns which table (nuclei and image_summary are shared: every stage may append columns).
@@ -117,4 +133,5 @@ STAGE_TABLES = {
     "granule": ["granules"],
     "coloc": ["coloc"],
     "sc_trace": ["sc_tracks", "sc_per_nucleus"],
+    "audit": ["mask_audit"],
 }
