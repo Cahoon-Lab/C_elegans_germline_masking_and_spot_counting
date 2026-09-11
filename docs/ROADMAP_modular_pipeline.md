@@ -15,9 +15,17 @@ ccw77_partition profile, spot instances for COSA-1, ImageJ voxel tags on every l
 (7 N2 dry-ice gonads plus stride-4 variants) are generated from a worktree of 8666f07 under
 C:/Users/ryane/germquant_golden/8666f07/; the RAD-51 cross-validation gonads join them once the NAS is
 reachable, and the ccw77 reconciliation of the partition stage needs the nd2 files on the E: drive.
-Still open: step 13 (Imaris SC calibration, needs traces from Ryan), step 14 (container and Alpine),
-step 15 (the deliberate hash bump, Ryan's call; the truthful `spots:no_foci_role` QC wording waits for
-it too, because it changes flag text).
+Real-data checks so far (2026-09-10 night): the current head run at full resolution on the dry-ice
+gonad noHS_male_001 matches the frozen golden cell-for-cell in every table, label and mask TIF, with
+the same config hash (only appended NA columns); the ccw77_partition profile ran every stage on that
+gonad without a failure (envelope, audit, staging from its migrated trace, tophat granules, partition
+per zone and pooled pachytene, lit fraction; about 55 minutes with the GPU shared). Two adversarial
+reviews of tranches A and B were applied (commits cf0cf61 and 22c9d65; the second caught a label-TIF
+writer that produced empty files). Still open: step 13 (Imaris SC calibration, needs traces from
+Ryan), the rest of step 14 (image build and A100 diff need Docker and Alpine), step 15 (the deliberate
+hash bump, Ryan's call; the truthful `spots:no_foci_role` QC wording waits for it too, because it
+changes flag text), the ccw77 reconciliation of the partition stage (needs the E: drive nd2 files) and
+the RAD-51 goldens (need the NAS).
 
 ## Where things stand today (HEAD 8666f07)
 
