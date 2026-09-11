@@ -10,6 +10,12 @@ coefficient, both answered inside the padded germline crop of the envelope stage
 Writes the `mask_audit` table (one row per candidate and per label) and, when render.montage is on, a
 two-panel max-projection overlay ``<image_id>__mask_audit.png`` with all-depth mask edges (blue DAPI,
 red lamin envelope, yellow = lamin nucleus with no label, magenta fill = label with no ring).
+
+Named differences from qc_mask_audit.py: the script rounded coverages and ring scores to three decimals
+BEFORE its gates (cov < 0.15, ring_ratio > 0.97, shell_over_thr < 0.75) and rounded the written values;
+the stage gates and writes the unrounded values (nucleus_filter, which produced the published v4 and
+zone numbers, was unrounded too), so a value within 0.0005 of a gate can be classed differently from
+the August mask_audit CSVs. Volumes use the .nd2 voxel, not the 0.1083 constant (see envelope docs).
 """
 from __future__ import annotations
 
@@ -81,11 +87,14 @@ def run_audit(labels: np.ndarray, germ_ids, lamin: np.ndarray, spacing, env: dic
     lvol = np.bincount(lab_c.ravel(), minlength=(ids.max() + 1) if ids.size else 1)
     coms = ndi.center_of_mass(gn_c, lab_c, ids) if ids.size else []
     sc = per.set_index("nucleus_id")
+    rs = env.get("ring_scores")
+    rs = rs.set_index("nucleus_id") if rs is not None and len(rs) else None
     for i, c in zip(ids, coms):
         rows.append({"kind": "germ_label", "object_id": int(i), "vol_um3": float(lvol[i] * vvol),
                      "z_um": c[0] * sp[0], "y_um": c[1] * sp[1], "x_um": c[2] * sp[2],
                      "cov_germ_label": np.nan, "cov_any_label": np.nan, "cov_envelope": np.nan,
-                     "ring_shell": np.nan, "ring_inside": np.nan,
+                     "ring_shell": float(rs.at[i, "ring_shell"]) if rs is not None and i in rs.index else np.nan,
+                     "ring_inside": float(rs.at[i, "ring_inside"]) if rs is not None and i in rs.index else np.nan,
                      "ring_ratio": float(sc.at[i, "ring_ratio"]) if i in sc.index else np.nan,
                      "shell_over_thr": float(sc.at[i, "shell_over_thr"]) if i in sc.index else np.nan,
                      "no_envelope": (not bool(sc.at[i, "has_envelope"])) if i in sc.index else pd.NA})

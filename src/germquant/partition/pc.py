@@ -50,17 +50,21 @@ def zshift_mask(gran, cyto, dz=DZ_PLANES):
     return gz & cyto
 
 
+WHOLE_MIN_CYTO_VOXELS = 5000      # pc_lamin_worker.metric_set: no whole-gonad PC on a tiny shell
+WHOLE_MIN_GRANULE_OBJECTS = 40    # ... or with fewer than 40 granule objects (zone rows are not gated)
+
+
 def partition_metrics(syp, gran, cyto, dt, bg, *, region=None, gates=WHOLE_GATES, dz=DZ_PLANES,
-                      with_rotation=True) -> dict:
+                      with_rotation=True, bins=DBINS_UM) -> dict:
     """PC, rotation null, z-shift floor and PC / z-shift for one region (None = whole shell)."""
     outside = cyto & ~gran
-    dm = pc_dm(syp, gran, outside, dt, bg, region=region, **gates)
+    dm = pc_dm(syp, gran, outside, dt, bg, bins=bins, region=region, **gates)
     rot = None
     if with_rotation:
         rg = rotation_null(gran, cyto)
-        rot = pc_dm(syp, rg, cyto & ~rg, dt, bg, region=region, **gates)
+        rot = pc_dm(syp, rg, cyto & ~rg, dt, bg, bins=bins, region=region, **gates)
     gz = zshift_mask(gran, cyto, dz)
-    zsh = pc_dm(syp, gz, cyto & ~gz, dt, bg, region=region, **gates)
+    zsh = pc_dm(syp, gz, cyto & ~gz, dt, bg, bins=bins, region=region, **gates)
     spec = round(dm / zsh, 4) if (dm is not None and zsh is not None and zsh > 0) else None
     reg = region if region is not None else np.ones(gran.shape, bool)
     return {"partition_coef": dm, "partition_coef_rot": rot, "partition_coef_zshift": zsh,
@@ -85,20 +89,33 @@ def zone_voxel_map(env_labels_c, zones: pd.DataFrame, spacing) -> np.ndarray:
 
 def run_partition(syp_c, gran_c, env_mask_c, spacing, *, cyto_um=CYTO_UM, bg_percentile=3.0,
                   env_labels_c=None, zones: pd.DataFrame | None = None, dz=DZ_PLANES,
-                  precomputed: dict | None = None) -> dict:
+                  precomputed: dict | None = None, whole_min_cyto_voxels=WHOLE_MIN_CYTO_VOXELS,
+                  whole_min_granule_objects=WHOLE_MIN_GRANULE_OBJECTS) -> dict:
     """The partition stage on the padded crop. Returns {table: PARTITION_COLS rows (whole + zones +
-    pach when zones are given), summary: image_summary fields, bg}."""
+    pach when zones are given), summary: image_summary fields, bg, gated: reason or None}. The whole
+    row carries the worker's gonad-level gates (shell under `whole_min_cyto_voxels` voxels or fewer than
+    `whole_min_granule_objects` granule objects: no whole PC); zone rows are ungated, as in the zone
+    worker. Distance bins follow the shell width (0.25 um steps up to `cyto_um`)."""
     if precomputed and "cyto" in precomputed and "dt" in precomputed:
         cyto, dt = precomputed["cyto"], precomputed["dt"]
     else:
         dt = ndi.distance_transform_edt(~env_mask_c, sampling=tuple(float(s) for s in spacing))
         cyto = ndi.binary_fill_holes(dt <= cyto_um) & ~env_mask_c
+    bins = np.arange(0.0, float(cyto_um) + 1e-6, 0.25)
     syp = np.asarray(syp_c, dtype=np.float32)
     gran = np.asarray(gran_c, dtype=bool) & cyto
     bg = float(np.percentile(syp, bg_percentile))
     n_gran_objects = int(ndi.label(gran)[1])
     rows = []
-    whole = partition_metrics(syp, gran, cyto, dt, bg, region=None, gates=WHOLE_GATES, dz=dz)
+    whole = partition_metrics(syp, gran, cyto, dt, bg, region=None, gates=WHOLE_GATES, dz=dz, bins=bins)
+    gated = None
+    if int(cyto.sum()) < whole_min_cyto_voxels:
+        gated = f"cyto_voxels={int(cyto.sum())}<{whole_min_cyto_voxels}"
+    elif n_gran_objects < whole_min_granule_objects:
+        gated = f"granule_objects={n_gran_objects}<{whole_min_granule_objects}"
+    if gated:
+        for k in ("partition_coef", "partition_coef_rot", "partition_coef_zshift", "partition_coef_specific"):
+            whole[k] = None
     rows.append({"region": "whole", "n_granules": n_gran_objects, "bg": bg, **whole})
     summary = {"partition_coef_whole": whole["partition_coef"], "partition_coef_rot_whole": whole["partition_coef_rot"],
                "partition_coef_zshift_whole": whole["partition_coef_zshift"],
@@ -106,9 +123,10 @@ def run_partition(syp_c, gran_c, env_mask_c, spacing, *, cyto_um=CYTO_UM, bg_per
     if zones is not None and env_labels_c is not None and len(zones):
         zv = zone_voxel_map(env_labels_c, zones, spacing)
         for name, sel in (("early", zv == 1), ("mid", zv == 2), ("late", zv == 3), ("pach", zv > 0)):
-            m = partition_metrics(syp, gran, cyto, dt, bg, region=sel, gates=ZONE_GATES, dz=dz, with_rotation=False)
+            m = partition_metrics(syp, gran, cyto, dt, bg, region=sel, gates=ZONE_GATES, dz=dz,
+                                  with_rotation=False, bins=bins)
             rows.append({"region": name, "n_granules": int(ndi.label(gran & sel)[1]), "bg": bg, **m})
             summary[f"partition_coef_{name}"] = m["partition_coef"]
             summary[f"partition_coef_specific_{name}"] = m["partition_coef_specific"]
     table = pd.DataFrame(rows, columns=PARTITION_COLS)
-    return {"table": table, "summary": summary, "bg": bg, "cyto": cyto, "dt": dt}
+    return {"table": table, "summary": summary, "bg": bg, "cyto": cyto, "dt": dt, "gated": gated}

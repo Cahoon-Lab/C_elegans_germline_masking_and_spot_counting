@@ -121,10 +121,15 @@ Detection parameters default to the `spots` block and can be overridden per inst
 ### Choosing what to measure (profiles)
 
 Instead of `--config config\config.yaml` you can name a profile: `--profile rad51_foci` (RAD-51 foci
-only) or `--profile segmentation_only` (nuclei and germline only). A profile is a short file in
-`config\profiles\` that switches stages on or off on top of `config\config.yaml`; every stage can also
-be switched off on the command line with `--no-<stage>` (`--no-spots`, `--no-coloc`, `--no-granule`,
-`--no-axis`, `--no-germline`).
+only), `--profile segmentation_only` (nuclei and germline only), `--profile n2_sc` (adds the SC tracer
+for fragmentation; see docs/SC_TRACING.md) or `--profile ccw77_partition` (the SYP-3 / PGL-1
+partition analysis with lamin envelopes, hand-traced staging and the Imaris-calibrated granule recipe,
+on top of `config\config_ccw77.yaml`). A profile is a short file in `config\profiles\` that switches
+stages on or off on top of a base config; every optional stage can also be switched off on the command
+line with `--no-<stage>` (`--no-spots`, `--no-coloc`, `--no-granule`, `--no-axis`, `--no-germline`,
+`--no-envelope`, `--no-staging`, `--no-partition`, ...). The staging stage has to run before the
+partition zones or a late-pachytene spot mean can exist. `germquant trace` takes optional image ids,
+`--traces PATH`, `--redo` (revisit traced images) and `--stride N` (display resolution, default 2).
 
 ### Segmentation only (no spot counting)
 

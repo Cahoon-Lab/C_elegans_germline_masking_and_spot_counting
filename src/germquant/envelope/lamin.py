@@ -99,10 +99,11 @@ def no_envelope_ids(scores: pd.DataFrame, *, ring_ratio_max=0.97, shell_over_thr
     return [int(i) for i in scores.loc[m, "nucleus_id"]]
 
 
-def territories(lab_c: np.ndarray, germ_ids, spacing, *, territory_dilate_um=4.0) -> tuple[pd.DataFrame, int]:
+def territories(lab_c: np.ndarray, germ_ids, spacing, *, territory_dilate_um=4.0) -> tuple[pd.DataFrame, int, np.ndarray]:
     """2D territories of the germline labels (max projection dilated by `territory_dilate_um`, connected
     components): per nucleus the territory its centroid lies in. Returns (table nucleus_id/territory_id,
-    n_territories). Which territory the hand-traced axis crosses is decided by the staging stage."""
+    n_territories, the 2D territory label map). Which territory the hand-traced axis crosses is decided
+    by the staging stage."""
     sp = np.asarray(spacing, dtype=float)
     ids = np.asarray([int(i) for i in germ_ids], dtype=np.int64)
     gn = np.isin(lab_c, ids)
@@ -159,13 +160,19 @@ def run_envelope(labels: np.ndarray, germ_ids, lamin: np.ndarray, spacing, param
     vvol = float(np.prod(sp))
     junk_vol = float(per.loc[~per["has_envelope"], "envelope_volume_um3"].sum())
     total_vol = float(per["envelope_volume_um3"].sum())
+    # the script's lam_vol_ratio: total envelope volume over total DAPI volume, fallbacks counted at 1.0
+    # (a fallback row's envelope volume IS its DAPI volume; otherwise DAPI = envelope / ratio)
+    dapi_vol = np.where(per["envelope_fallback"], per["envelope_volume_um3"],
+                        per["envelope_volume_um3"] / per["envelope_vol_ratio"].replace(0, np.nan))
+    dapi_total = float(np.nansum(dapi_vol))
     summary = {
         "n_envelope_fallback": int(per["envelope_fallback"].sum()),
-        "envelope_vol_ratio": float(per.loc[~per["envelope_fallback"], "envelope_vol_ratio"].mean()) if (~per["envelope_fallback"]).any() else float("nan"),
+        "envelope_vol_ratio": (total_vol / dapi_total) if dapi_total > 0 else float("nan"),
         "n_no_envelope": int(len(junk)),
         "no_envelope_vol_frac": (junk_vol / total_vol) if total_vol > 0 else float("nan"),
         "n_territories": n_terr,
         "ring_thr": thr,
     }
     return {"envelope_labels": env_full, "crop": sl, "per_nucleus": per, "summary": summary,
-            "no_envelope_ids": sorted(junk), "voxel_volume_um3": vvol, "territory_map": terr_map}
+            "no_envelope_ids": sorted(junk), "voxel_volume_um3": vvol, "territory_map": terr_map,
+            "ring_scores": scores}

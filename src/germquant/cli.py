@@ -64,7 +64,8 @@ def main(argv: list[str] | None = None) -> int:
     pt.add_argument("results_root")
     pt.add_argument("image_ids", nargs="*", help="only these images (default: every finished image without a trace)")
     _add_config_args(pt)
-    pt.add_argument("--traces", help="traces JSON (default: staging.traces_file of the config)")
+    pt.add_argument("--traces", help="traces JSON, relative to the working directory (default: staging.traces_file "
+                                     "of the config, relative to the repo)")
     pt.add_argument("--redo", action="store_true", help="also show images that already have a trace")
     pt.add_argument("--stride", type=int, default=2, help="xy stride of the display (2 = half resolution)")
 
@@ -73,7 +74,8 @@ def main(argv: list[str] | None = None) -> int:
     ps.add_argument("results_root")
     ps.add_argument("image_ids", nargs="*")
     _add_config_args(ps)
-    ps.add_argument("--traces")
+    ps.add_argument("--traces", help="traces JSON, relative to the working directory (default: staging.traces_file "
+                                     "of the config, relative to the repo)")
 
     pv = sub.add_parser("validate", help="compare pipeline output to hand-scored ground truth")
     pv.add_argument("--pred", help="pipeline CSV (counts/lengths mode)")
@@ -287,8 +289,11 @@ def _batch(args) -> int:
 
 
 def _traces_path(cfg, args) -> Path:
-    tf = getattr(args, "traces", None) or cfg.get("staging.traces_file", "staging/pachytene_traces.json")
-    return Path(tf) if Path(tf).is_absolute() else cfg.base_dir / tf
+    tf = getattr(args, "traces", None)
+    if tf:
+        return Path(tf).resolve()                  # a command-line path is relative to the working directory
+    tf = cfg.get("staging.traces_file", "staging/pachytene_traces.json")
+    return Path(tf) if Path(tf).is_absolute() else cfg.base_dir / tf   # the config value: relative to the repo
 
 
 def _trace(args) -> int:

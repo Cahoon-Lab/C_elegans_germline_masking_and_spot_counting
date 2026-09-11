@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ..fsutil import long_path
 from ..io import read_nd2_metadata, read_stack
 from .zones import OFF_AXIS_UM, load_traces, save_trace
 
@@ -22,21 +23,25 @@ log = logging.getLogger(__name__)
 
 
 def results_images(results_root: str | Path) -> list[tuple[str, Path, Path]]:
-    """(image_id, nuclei.csv, nd2 path) for every finished image under a results tree (file_path column)."""
+    """(image_id, nuclei.csv, nd2 path) for every finished image under a results tree (file_path column).
+    Walked through the extended-length path so deep NAS trees work."""
+    from ..batch import _find
+
     out = []
-    for f in sorted(Path(results_root).rglob("*__nuclei.csv")):
+    for f in _find(Path(results_root), "__nuclei.csv"):
         iid = f.name.split("__")[0]
         try:
-            fp = pd.read_csv(f, usecols=["file_path"], nrows=1)["file_path"].iloc[0]
+            fp = pd.read_csv(long_path(f), usecols=["file_path"], nrows=1)["file_path"].iloc[0]
         except Exception as e:  # noqa: BLE001 - a table without provenance cannot be traced
-            log.warning("trace: skipping %s (no file_path column: %s)", f, e)
+            log.warning("trace: skipping %s (%s: %s)", f, type(e).__name__, e)
             continue
         out.append((iid, f, Path(str(fp))))
     return out
 
 
 def load_display(nd2_path: Path, cfg, stride: int = 2):
-    """(dapi, syp) (Z, Y, X) at `stride`, plus (dy, dx) of the DISPLAY pixels in um."""
+    """(dapi, syp) (Z, Y, X) at `stride`, plus (dy, dx) of the DISPLAY pixels in um. read_stack already
+    folds the stride into the spacing it returns, so it is used as is."""
     meta = read_nd2_metadata(nd2_path)
     role_to_idx, _ = cfg.channel_map.resolve(meta["channel_names"])
     st = read_stack(nd2_path, xy_stride=stride)
@@ -44,7 +49,7 @@ def load_display(nd2_path: Path, cfg, stride: int = 2):
     ce = role_to_idx.get("central_element")
     syp = st.data[ce] if ce is not None else np.zeros_like(dapi)
     _dz, dy, dx = st.spacing
-    return np.asarray(dapi), np.asarray(syp), (dy * stride, dx * stride)
+    return np.asarray(dapi), np.asarray(syp), (float(dy), float(dx))
 
 
 def run_gui(items: list[tuple[str, Path, Path]], cfg, traces_file: Path, stride: int = 2,
@@ -116,7 +121,7 @@ def run_gui(items: list[tuple[str, Path, Path]], cfg, traces_file: Path, stride:
         if keep_view:
             ax.set_xlim(xl); ax.set_ylim(yl)
         if state["show_cent"]:
-            nc = pd.read_csv(nuc_csv, usecols=["centroid_x_um", "centroid_y_um", "in_germline"])
+            nc = pd.read_csv(long_path(nuc_csv), usecols=["centroid_x_um", "centroid_y_um", "in_germline"])
             g = nc[nc["in_germline"].astype(bool)]
             ax.scatter(g["centroid_x_um"], g["centroid_y_um"], s=4, c="#3af", alpha=0.5)
         P = state["pts"]
@@ -204,7 +209,6 @@ def restage(results_root: str | Path, traces_file: str | Path, cfg, image_ids: l
     """Recompute ``<image_id>__zones.csv`` for finished images from their nuclei table and the traces
     file (cheap geometry, no image processing). nuclei.csv is left untouched: its zone columns are from
     the original run; the zones table is the record after a re-trace."""
-    from ..fsutil import long_path
     from .zones import run_staging
 
     traces = load_traces(traces_file)
@@ -215,7 +219,7 @@ def restage(results_root: str | Path, traces_file: str | Path, cfg, image_ids: l
         t = traces.get(iid)
         if not t or t.get("status") != "traced":
             continue
-        nc = pd.read_csv(nuc_csv, low_memory=False)
+        nc = pd.read_csv(long_path(nuc_csv), low_memory=False)
         germ = nc[nc["in_germline"].astype(bool)].copy()
         if germ.empty:
             continue

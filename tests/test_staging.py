@@ -66,6 +66,26 @@ def test_migrated_traces_are_whole_image_and_complete():
     assert v["migrated_from"]["crop_offset_vox"][2] == 444 and abs(v["points_um"][0][0] - 196.786) < 1e-3
 
 
+def test_tracer_display_scaling(monkeypatch):
+    """A display pixel maps to native voxel x stride microns exactly once (read_stack already scales)."""
+    from germquant.io.nd2_reader import Stack
+    from germquant.staging import tracer
+
+    Z, Y, X, dy, dx = 4, 40, 60, 0.1, 0.1
+    stride = 2
+
+    def fake_read_stack(path, xy_stride=1, **kw):
+        return Stack(data=np.zeros((2, Z, Y // xy_stride, X // xy_stride), np.float32),
+                     spacing=(0.3, dy * xy_stride, dx * xy_stride), channel_names=["405", "477"], path="x", spacing_ok=True)
+
+    monkeypatch.setattr(tracer, "read_stack", fake_read_stack)
+    monkeypatch.setattr(tracer, "read_nd2_metadata", lambda p: {"channel_names": ["405", "477"]})
+    cfg = load_config("config/config.yaml")
+    dapi, _syp, (py, px) = tracer.load_display(Path("x.nd2"), cfg, stride=stride)
+    assert dapi.shape == (Z, Y // stride, X // stride)
+    assert abs(dapi.shape[-1] * px - X * dx) < 1e-9 and abs(dapi.shape[-2] * py - Y * dy) < 1e-9
+
+
 def test_save_and_load_traces(tmp_path):
     tf = tmp_path / "t.json"
     tr = save_trace(tf, "img", [(1.234, 5.678), (9.0, 9.0)], "traced")

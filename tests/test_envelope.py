@@ -124,6 +124,19 @@ def test_envelope_audit_acquisition_stages_run(tmp_path, patched_reader_lamin, m
     assert isum["exp_ms_lamin"] == 90.0 and isum["laser_pow_lamin"] == 5.0 and np.isnan(isum["exp_ms_dna"])
     audit = pd.read_csv(next(out.rglob("*__mask_audit.csv")))
     assert set(audit["kind"]) <= {"lamin_candidate", "germ_label"} and (audit["kind"] == "germ_label").sum() == len(germ)
+    gl = audit[audit["kind"] == "germ_label"]
+    assert gl["ring_shell"].notna().all() and gl["ring_inside"].notna().all()       # the script's ring evidence
+    assert np.allclose(gl["ring_ratio"], gl["ring_shell"] / np.maximum(gl["ring_inside"], 1.0))
+    assert isum["envelope_vol_ratio"] > 0                                            # total envelope / total DAPI volume
+    # label TIFs are real files with the voxel size, not stubs, and read back as int32
+    import tifffile
+
+    lab_tif = next(out.rglob("*__nuclei_labels.tif"))
+    assert lab_tif.stat().st_size > 1000
+    arr = tifffile.imread(lab_tif)
+    assert arr.dtype == np.int32 and arr.ndim == 3
+    with tifffile.TiffFile(lab_tif) as t:
+        assert t.is_ome and "PhysicalSizeX" in (t.ome_metadata or "")
     assert next(out.rglob("*__envelope_labels.tif")).exists()
     assert next(out.rglob("*__mask_audit.png")).exists()
     assert any(f.startswith("envelope:fallback_n=") for f in res["qc_flags"])

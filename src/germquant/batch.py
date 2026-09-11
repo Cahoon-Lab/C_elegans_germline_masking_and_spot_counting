@@ -200,7 +200,10 @@ def collect(out_root: str | Path, tables: tuple[str, ...] = tuple(schema.TABLES)
             continue
         folders[iid] = (f.parent, provenance.read_done_marker(f.parent, iid))
     complete = {iid for iid, (_d, m) in folders.items() if m or not require_marker}
-    for t in tables:
+    # extra spot-instance tables (spots_<name>) are discovered from disk so no schema change is needed
+    extra = sorted({f.name.split("__", 1)[1][:-4] for f in _find(out_root, ".csv")
+                    if "__spots_" in f.name and f.name.split("__")[0] in complete})
+    for t in tuple(tables) + tuple(x for x in extra if x not in tables):
         frames = []
         for f in _find(out_root, f"__{t}.csv"):
             iid = f.name.split("__")[0]
@@ -210,7 +213,7 @@ def collect(out_root: str | Path, tables: tuple[str, ...] = tuple(schema.TABLES)
                 frames.append(pd.read_csv(long_path(f), low_memory=False))
             except Exception as e:  # noqa: BLE001 - one unreadable table must not block the stack
                 log.warning("collect: skipping %s (%s)", f, e)
-        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=schema.TABLES[t])
+        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=schema.TABLES.get(t, schema.SPOTS))
         df.to_csv(long_path(out_root / f"batch_{t}.csv"), index=False)
         counts[t] = len(df)
     rows: dict[str, dict] = {}

@@ -65,7 +65,8 @@ def test_pc_dm_recovers_planted_enrichment():
 def test_run_partition_regions_and_zone_map():
     syp, _pgl, env_lab, gran, _dt = _planted()
     zones = pd.DataFrame({"nucleus_id": [1], "zone": ["mid"]})
-    res = run_partition(syp, gran, env_lab > 0, SP, env_labels_c=env_lab, zones=zones)
+    # the planted scene has 6 granule objects: below the worker's 40-object whole-gonad gate, so lift it
+    res = run_partition(syp, gran, env_lab > 0, SP, env_labels_c=env_lab, zones=zones, whole_min_granule_objects=1)
     t = res["table"].set_index("region")
     assert list(t.index) == ["whole", "early", "mid", "late", "pach"]
     assert t.loc["whole", "partition_coef"] > 1.5 and np.isnan(float(t.loc["early", "partition_coef"] or np.nan))
@@ -81,9 +82,22 @@ def test_run_granule_tail_lit_fraction():
     t = res["table"]
     assert len(t) >= 4 and (t["excess_n"] > 0).mean() > 0.9
     s = res["summary"]
-    assert s["tail_n_granules"] == len(t) and 0 <= s["tail_frac_excess_gt_0.25"] <= 1 and s["tail_n_no_envelope_dropped"] == 0
+    assert s["tail_n_granules_scored"] == len(t) and s["tail_n_granules"] >= len(t)
+    assert 0 <= s["tail_frac_excess_gt_0.25"] <= 1 and s["tail_n_no_envelope_dropped"] == 0
     res2 = run_granule_tail(syp, pgl, env_lab, SP, drop_ids=[1])              # dropping the only nucleus: no shell
     assert res2["summary"]["tail_n_granules"] == 0 and res2["summary"]["tail_n_no_envelope_dropped"] == 1
+
+
+def test_whole_row_gates():
+    syp, _pgl, env_lab, gran, _dt = _planted()
+    res = run_partition(syp, gran, env_lab > 0, SP)                          # 6 objects < 40: the worker's gate
+    w = res["table"].set_index("region").loc["whole"]
+    assert res["gated"].startswith("granule_objects=6<40") and pd.isna(w["partition_coef"])
+    assert w["region_voxels"] > 0 and res["summary"]["partition_coef_whole"] is None
+    res2 = run_partition(syp, gran, env_lab > 0, SP, cyto_um=3.5, whole_min_granule_objects=1)   # wider shell: bins follow it
+    # the whole row's region is the full crop; the shell itself (outside voxels) grows with cyto_um
+    assert res2["gated"] is None and res2["table"].set_index("region").loc["whole", "outside_voxels"] > w["outside_voxels"]
+    assert res2["summary"]["partition_coef_whole"] is not None
 
 
 def _cfg(traces_file, **switches):

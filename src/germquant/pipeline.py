@@ -51,6 +51,29 @@ _ENVELOPE_KEYS = {
 }
 
 
+def spot_instances(cfg) -> list[dict]:
+    """The extra spot instances a config declares (spots.instances), validated once: each needs a
+    non-empty identifier-like `name` (its table is spots_<name>, its nuclei column n_spots_<name>) that
+    is unique and collides with no core table or column, and a channel `role`. Raises ValueError for a
+    bad profile before any image is read."""
+    raw = cfg.get("spots.instances", []) or []
+    out, seen = [], set()
+    for i, inst in enumerate(raw):
+        if not isinstance(inst, dict):
+            raise ValueError(f"spots.instances[{i}] must be a mapping with name and role")
+        name = str(inst.get("name", "")).strip()
+        if not name or not name.replace("_", "a").isalnum() or name in seen:
+            raise ValueError(f"spots.instances[{i}]: name {name!r} must be a unique identifier")
+        if f"spots_{name}" in schema.TABLES or f"n_spots_{name}" in schema.NUCLEI:
+            raise ValueError(f"spots.instances[{i}]: name {name!r} collides with a core table or column")
+        role = str(inst.get("role", "")).strip()
+        if not role:
+            raise ValueError(f"spots.instances[{i}] ({name}): a channel role is required")
+        seen.add(name)
+        out.append({**inst, "name": name, "role": role})
+    return out
+
+
 def resolve_model_path(cfg):
     """The Cellpose model the config names, resolved against the config's base_dir when it is a relative
     path to an existing file (so a profile outside the repo still finds models/...), or against
@@ -105,6 +128,7 @@ def process_image(
     provenance.clear_done_marker(out_dir, sample["image_id"])
     # per-stage provenance (sub-hashes, model digest, run geometry): additive fields on the manifest and
     # the stage record, never table columns, so no CSV header changes.
+    spot_instances(cfg)                    # a bad spots.instances declaration fails here, before any pixel is read
     model_file = resolve_model_path(cfg)
     model_sha = (provenance.file_sha256(model_file)
                  if str(cfg.get("segmentation.nuclei.method", "auto")) != "classical" else "unused")
@@ -260,19 +284,22 @@ def process_image(
     zones_table = pd.DataFrame(columns=schema.ZONES)
     staging_summary_fields: dict = {}
     stag_ctx = None
-    trace = None
     stag_on = stage_enabled(cfg, "staging")
-    if stag_on:
-        from .staging import load_traces
-
-        tf = cfg.get("staging.traces_file", "staging/pachytene_traces.json")
-        tf_path = Path(tf) if Path(tf).is_absolute() else cfg.base_dir / tf
-        trace = load_traces(tf_path).get(sample["image_id"])
 
     def _staging():
         nonlocal nuclei
-        from .staging import run_staging
+        from .staging import load_traces, run_staging
 
+        # the traces file is read inside the stage so a missing or malformed file flags staging:FAILED
+        tf = cfg.get("staging.traces_file", "staging/pachytene_traces.json")
+        tf_path = Path(tf) if Path(tf).is_absolute() else cfg.base_dir / tf
+        trace = load_traces(tf_path).get(sample["image_id"])
+        if not isinstance(trace, dict) or "points_um" not in trace:
+            flags.append("staging:no_trace")
+            return None
+        if trace.get("status") != "traced":
+            flags.append(f"staging:trace_status_{trace.get('status')}")
+            return None
         df = nuclei
         use_env = str(cfg.get("staging.centroid", "envelope")) == "envelope" and "envelope_centroid_x_um" in df.columns \
             and df["envelope_centroid_x_um"].notna().any()
@@ -287,14 +314,15 @@ def process_image(
         return res
 
     stag_ctx = run_stage("staging", _staging, flags=flags, outcomes=outcomes,
-                         enabled=stag_on and trace is not None and trace.get("status") == "traced" and not nuclei.empty,
-                         skip_reason=("disabled" if not stag_on else
-                                      "no trace for this image in staging.traces_file" if trace is None else
-                                      f"trace status {trace.get('status')!r}" if trace.get("status") != "traced"
-                                      else "no germline nuclei"))
+                         enabled=stag_on and not nuclei.empty,
+                         skip_reason="disabled" if not stag_on else "no germline nuclei")
     if stag_ctx is not None:
         zones_table = stag_ctx["zones"]
         staging_summary_fields = dict(stag_ctx["summary"])
+    elif stag_on and outcomes.get("staging") is not None and outcomes["staging"].status == "ran":
+        # ran but found no usable trace for this image: record it as a skip with the reason
+        why = next((f for f in flags if f.startswith("staging:no_trace") or f.startswith("staging:trace_status_")), "no trace")
+        outcomes["staging"] = Outcome("skipped", reason=why.replace("staging:", "").replace("_", " "))
 
     # ---- spots (SpotMAX) — RAD-51 (or other) foci per nucleus.
     # Detects peaks ABOVE local background inside each nucleus mask, merges z-axis spot-splits, and
@@ -341,12 +369,12 @@ def process_image(
     # (6 oocyte / 5 spermatocyte bivalents) turn it into a crossover-designation readout. ----
     extra_spot_tables: dict[str, pd.DataFrame] = {}
     extra_spot_cols: list[str] = []
+    extra_spot_per_nuc: dict[str, pd.DataFrame] = {}
     spot_instance_summary: dict = {}
-    for inst in list(cfg.get("spots.instances", []) or []):
-        name = str(inst.get("name", inst.get("role", "extra")))
-        role = str(inst.get("role", "crossover_foci"))
-        table_name = str(inst.get("table", f"spots_{name}"))
-        col = str(inst.get("column", f"n_spots_{name}"))
+    inst_enabled: list[bool] = []
+    for inst in spot_instances(cfg):
+        name, role = inst["name"], inst["role"]
+        table_name, col = f"spots_{name}", f"n_spots_{name}"
         extra_spot_tables[table_name] = pd.DataFrame(columns=schema.SPOTS)
         extra_spot_cols.append(col)
         r_idx = role_to_idx.get(role)
@@ -383,14 +411,15 @@ def process_image(
                 summ[f"{name}_expected_per_nucleus"] = expected_sc_count(sample["germ_cell"]) or float("nan")
             nuclei = df
             flags.append(f"spots_{name}:spotmax_n={len(per_spot)}")
-            return per_spot, summ
+            return per_spot, per_nuc, summ
 
-        res_i = run_stage(f"spots_{name}", _inst, flags=flags, outcomes=outcomes,
-                          enabled=spots_on and r_idx is not None and n_nuclei > 0,
+        on_i = spots_on and r_idx is not None and n_nuclei > 0
+        inst_enabled.append(on_i)
+        res_i = run_stage(f"spots_{name}", _inst, flags=flags, outcomes=outcomes, enabled=on_i,
                           skip_reason=("disabled" if not spots_on else
                                        f"no {role} channel" if r_idx is None else "no nuclei"))
         if res_i is not None:
-            extra_spot_tables[table_name], summ = res_i
+            extra_spot_tables[table_name], extra_spot_per_nuc[col], summ = res_i
             spot_instance_summary.update(summ)
 
     # ---- SC tracing (per-nucleus SC length, fragment lower bound, fragmentation index) ----
@@ -544,8 +573,12 @@ def process_image(
                             cyto_um=float(cfg.get("envelope.cyto_um", 2.5)),
                             bg_percentile=float(cfg.get("partition.bg_percentile", 3.0)),
                             env_labels_c=env_lab, zones=zones_table if len(zones_table) else None,
-                            dz=int(cfg.get("partition.zshift_planes", 6)), precomputed=pre)
+                            dz=int(cfg.get("partition.zshift_planes", 6)), precomputed=pre,
+                            whole_min_cyto_voxels=int(cfg.get("partition.whole_min_cyto_voxels", 5000)),
+                            whole_min_granule_objects=int(cfg.get("partition.whole_min_granule_objects", 40)))
         flags.append(f"partition:frame={src},granules={gran_ctx['method']}")
+        if res.get("gated"):
+            flags.append(f"partition:whole_gated_{res['gated']}")
         return res
 
     part_on = stage_enabled(cfg, "partition")
@@ -579,8 +612,8 @@ def process_image(
     qc_pass, qc_all = qc.qc_flags(
         n_nuclei=n_nuclei, channel_flags=ch_flags,
         axis_flags=[f for f in flags if f.startswith("axis")],
-        spots_found=len(spots) > 0,
-        spots_enabled=bool(cfg.get("spots.enabled", True)) and spots_idx is not None,
+        spots_found=len(spots) > 0 or any(len(t) > 0 for t in extra_spot_tables.values()),
+        spots_enabled=(bool(cfg.get("spots.enabled", True)) and spots_idx is not None) or any(inst_enabled),
     )
     qc_all = sorted(set(flags + qc_all))
     outcomes["qc"] = Outcome("ran", elapsed_s=time.perf_counter() - t_qc,
@@ -619,8 +652,14 @@ def process_image(
             excluded["granule_volume_um3"] = (
                 excluded["nucleus_id"].map(mg["granule_volume_um3"]) if mg is not None else 0.0)
             excluded["granule_volume_um3"] = excluded["granule_volume_um3"].fillna(0.0)
+        # off-gonad nuclei carry their real count for every extra spot instance too (the per-spot table
+        # is a complete record, so the nuclei column must reconcile with it), like n_spots above
+        for col in extra_spot_cols:
+            pn = extra_spot_per_nuc.get(col)
+            if pn is not None and not pn.empty:
+                excluded[col] = excluded["nucleus_id"].map(pn.set_index("nucleus_id")["n_spots"]).fillna(0).astype(int)
         nuclei = pd.concat([nuclei, excluded], ignore_index=True)
-        for col in extra_spot_cols:            # off-gonad nuclei: a real zero for every extra spot instance
+        for col in extra_spot_cols:            # an instance that did not run: a real zero everywhere
             if col in nuclei.columns:
                 nuclei[col] = nuclei[col].fillna(0).astype(int)
     tables = {"nuclei": nuclei, "spots": spots, "granules": granules,
@@ -647,17 +686,22 @@ def process_image(
         if env_ctx is not None and cfg.get("output.write_envelope_labels", True):
             _save_labels(env_ctx["envelope_labels"], out_dir / f"{sample['image_id']}__envelope_labels.tif", spacing)
 
+    def _audit_overlay():
+        from .qc_audit import write_audit_overlay
+
+        sl = env_ctx["crop"]
+        germ = nuclei[nuclei["in_germline"].astype(bool)] if "in_germline" in nuclei.columns else nuclei
+        ids = [int(v) for v in germ["nucleus_id"].tolist()]     # the germline set the audit table used
+        write_audit_overlay(out_dir / f"{sample['image_id']}__mask_audit.png",
+                            stack.data[role_to_idx["dna"]][sl] if role_to_idx.get("dna") is not None else stack.data[0][sl],
+                            stack.data[lamin_idx][sl], labels[sl], ids, env_ctx["envelope_labels"][sl],
+                            audit_ctx["candidate_labels"], audit_ctx["missed_ids"], env_ctx["no_envelope_ids"],
+                            title=sample["image_id"])
+
     def _render():
         if audit_ctx is not None and env_ctx is not None:
-            from .qc_audit import write_audit_overlay
-
-            sl = env_ctx["crop"]
-            ids = [int(v) for v in nuclei["nucleus_id"].tolist()]
-            write_audit_overlay(out_dir / f"{sample['image_id']}__mask_audit.png",
-                                stack.data[role_to_idx["dna"]][sl] if role_to_idx.get("dna") is not None else stack.data[0][sl],
-                                stack.data[lamin_idx][sl], labels[sl], ids, env_ctx["envelope_labels"][sl],
-                                audit_ctx["candidate_labels"], audit_ctx["missed_ids"], env_ctx["no_envelope_ids"],
-                                title=sample["image_id"])
+            # an optional stage's PNG must never abort the image: non-fatal, flagged on failure
+            run_stage("audit_overlay", _audit_overlay, flags=flags, outcomes=outcomes)
         excl_ids = set(excluded["nucleus_id"]) if not excluded.empty else None
         make_montage(
             stack, labels, role_to_idx, out_dir / f"{sample['image_id']}__montage.png",
@@ -733,18 +777,26 @@ def _conform_schema(df, name):
 
 
 def _save_labels(labels, path, spacing=None):
-    """int32 label image; with `spacing` (dz, dy, dx um) the ImageJ voxel-size tags are written so
-    Imaris / Fiji load it on the right physical grid (values unchanged)."""
+    """int32 label image. With `spacing` (dz, dy, dx um) it is written as OME-TIFF carrying the physical
+    voxel size (the ImageJ format rejects int32), so Imaris and Fiji / Bio-Formats load it on the right
+    grid; tifffile.imread returns the identical int32 array either way. A failed tagged write falls back
+    to the plain write so a truncated file is never left behind."""
     try:
         import tifffile
 
+        arr = labels.astype(np.int32)
         if spacing is not None:
             sp = tuple(float(s) for s in spacing)
-            tifffile.imwrite(long_path(path), labels.astype(np.int32), compression="zlib", imagej=True,
-                             resolution=(1 / sp[2], 1 / sp[1]),
-                             metadata={"spacing": sp[0], "unit": "um", "axes": "ZYX"})
-        else:
-            tifffile.imwrite(long_path(path), labels.astype(np.int32), compression="zlib")
+            try:
+                tifffile.imwrite(long_path(path), arr, compression="zlib", ome=True,
+                                 resolution=(1 / sp[2], 1 / sp[1]),
+                                 metadata={"axes": "ZYX", "PhysicalSizeX": sp[2], "PhysicalSizeXUnit": "µm",
+                                           "PhysicalSizeY": sp[1], "PhysicalSizeYUnit": "µm",
+                                           "PhysicalSizeZ": sp[0], "PhysicalSizeZUnit": "µm"})
+                return
+            except Exception as e:  # noqa: BLE001 - fall back to the untagged file, never a stub
+                log.warning("tagged label write failed (%s); writing a plain TIFF", e)
+        tifffile.imwrite(long_path(path), arr, compression="zlib")
     except Exception as e:  # noqa: BLE001
         log.warning("could not save label image: %s", e)
 

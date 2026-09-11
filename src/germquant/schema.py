@@ -141,6 +141,7 @@ IMAGE_SUMMARY = [
     # granule_tail stage (lit fraction)
     "tail_n_granules", "tail_n_no_envelope_dropped", "tail_nuclear_syp", "tail_frac_excess_gt_0.25",
     "tail_frac_excess_gt_0.5", "tail_frac_excess_gt_1.0", "tail_excess_p50", "tail_excess_p90", "tail_excess_p99",
+    "tail_n_granules_scored",
 ]
 
 TABLES = {
