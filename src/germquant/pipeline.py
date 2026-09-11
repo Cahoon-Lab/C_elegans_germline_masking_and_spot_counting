@@ -624,20 +624,20 @@ def process_image(
     def _write():
         _write_tables(tables, shared, out_dir, sample["image_id"], cfg.get("output.formats", ["csv"]))
         if cfg.get("output.write_label_images", True):
-            _save_labels(labels, out_dir / f"{sample['image_id']}__nuclei_labels.tif")
+            _save_labels(labels, out_dir / f"{sample['image_id']}__nuclei_labels.tif", spacing)
         if cfg.get("output.write_spots_image", True) and len(spots):
             _save_spots_image(spots, labels.shape, spacing, out_dir / f"{sample['image_id']}__spots.tif",
                               radius_um=float(cfg.get("spots.spot_radius_um", 0.3)))
         # surfaced objects for Imaris: PGL-1 granules as a label image (-> Surfaces), the SC ribbon and
         # cytoplasmic SYP-aggregate masks as calibrated binary TIFs (overlay them on the raw channels).
         if cfg.get("output.write_label_images", True) and granule_labels is not None and granule_labels.max() > 0:
-            _save_labels(granule_labels, out_dir / f"{sample['image_id']}__granules_labels.tif")
+            _save_labels(granule_labels, out_dir / f"{sample['image_id']}__granules_labels.tif", spacing)
         for mname in ("sc_ribbon", "syp_aggregate"):
             m = masks.get(mname)
             if m is not None and m.any():
                 _save_mask_image(m, spacing, out_dir / f"{sample['image_id']}__{mname}.tif")
         if env_ctx is not None and cfg.get("output.write_envelope_labels", True):
-            _save_labels(env_ctx["envelope_labels"], out_dir / f"{sample['image_id']}__envelope_labels.tif")
+            _save_labels(env_ctx["envelope_labels"], out_dir / f"{sample['image_id']}__envelope_labels.tif", spacing)
 
     def _render():
         if audit_ctx is not None and env_ctx is not None:
@@ -724,11 +724,19 @@ def _conform_schema(df, name):
     return df[list(declared) + extras]
 
 
-def _save_labels(labels, path):
+def _save_labels(labels, path, spacing=None):
+    """int32 label image; with `spacing` (dz, dy, dx um) the ImageJ voxel-size tags are written so
+    Imaris / Fiji load it on the right physical grid (values unchanged)."""
     try:
         import tifffile
 
-        tifffile.imwrite(long_path(path), labels.astype(np.int32), compression="zlib")
+        if spacing is not None:
+            sp = tuple(float(s) for s in spacing)
+            tifffile.imwrite(long_path(path), labels.astype(np.int32), compression="zlib", imagej=True,
+                             resolution=(1 / sp[2], 1 / sp[1]),
+                             metadata={"spacing": sp[0], "unit": "um", "axes": "ZYX"})
+        else:
+            tifffile.imwrite(long_path(path), labels.astype(np.int32), compression="zlib")
     except Exception as e:  # noqa: BLE001
         log.warning("could not save label image: %s", e)
 

@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 from test_end_to_end import patched_reader_4ch  # noqa: F401  (fixture: DAPI / SYP / RAD-51 / PGL-1 puncta)
 
-from germquant import pipeline
+from germquant import pipeline  # noqa: I001
 from germquant.config import load_config
 
 ROOT = Path(__file__).resolve().parents[1]

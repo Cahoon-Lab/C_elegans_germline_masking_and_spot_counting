@@ -5,12 +5,19 @@ meiosis question needs (RAD-51 foci, COSA-1 foci, nuclei and germline, pachytene
 partitioning, SC tracking for fragmentation) as one pipeline where you switch on the components you
 need, instead of installing a separate pipeline per question.
 
-Status (2026-09-10): steps 0 and 1 are done on branch feat/modular-stages (golden tooling, synthetic
-3-channel and 4-channel goldens generated from the frozen commit 8666f07 and reproduced by the new
-code, run-to-run determinism confirmed on one gonad, stage registry and CLI switches, granule stage split
-out of coloc, per-image stage record). Real goldens (7 N2 dry-ice gonads plus stride-4 variants) are
-generated from a worktree of 8666f07 under C:/Users/ryane/germquant_golden/8666f07/; the RAD-51
-cross-validation gonads join them once the NAS is reachable. Everything from step 2 on is still a plan.
+Status (2026-09-10 evening): steps 0 to 12 are implemented on branch feat/modular-stages (local, not
+pushed): golden tooling with synthetic 3- and 4-channel goldens from the frozen commit 8666f07, stage
+registry and generated CLI switches, granule stage split out of coloc, per-stage provenance and the
+completion marker, hash-preserving profiles, batch resume / exclusions / collect, the SC tracer restored
+as sc_trace, envelope + audit + acquisition stages, granule.method imaris_tophat, the staging stage with
+`germquant trace` / `restage` and the 25 migrated traces, partition + granule_tail stages and the
+ccw77_partition profile, spot instances for COSA-1, ImageJ voxel tags on every label TIF. Real goldens
+(7 N2 dry-ice gonads plus stride-4 variants) are generated from a worktree of 8666f07 under
+C:/Users/ryane/germquant_golden/8666f07/; the RAD-51 cross-validation gonads join them once the NAS is
+reachable, and the ccw77 reconciliation of the partition stage needs the nd2 files on the E: drive.
+Still open: step 13 (Imaris SC calibration, needs traces from Ryan), step 14 (container and Alpine),
+step 15 (the deliberate hash bump, Ryan's call; the truthful `spots:no_foci_role` QC wording waits for
+it too, because it changes flag text).
 
 ## Where things stand today (HEAD 8666f07)
 
