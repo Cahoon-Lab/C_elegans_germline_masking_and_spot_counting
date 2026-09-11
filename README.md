@@ -65,12 +65,15 @@ This processes every `.nd2` under the folder, including sub-folders, one image a
 skips the `10x` and `largeimage` overviews on its own. It writes one results sub-folder per image
 and a `batch_summary.csv` listing them all with their nucleus counts and QC flags. Many images can
 take hours; leave the window open. If it is interrupted, add `--resume` to the same line: images
-whose results folder already holds a completion marker written with the same config and the same
-stages are skipped, the rest are processed, and the summary is rebuilt from everything on disk.
-Without `--resume` the batch reprocesses everything.
+whose results folder already holds a completion marker written with the same config, the same
+stages, the same xy stride and the same nucleus model, and with no failed stage, are skipped; the
+rest are processed, and the summary is rebuilt from every finished folder of the study. Without
+`--resume` the batch reprocesses everything.
 
-To drop particular gonads from a study (a fused carcass, a second germline limb), list substrings
-of their image ids in a JSON file and point `qc.exclusions_file` in the config at it; both `batch`
+To drop particular gonads from a study (a fused carcass, a second germline limb), list their ids in
+a JSON file and point `qc.exclusions_file` in the config at it. An entry matches whole name parts
+only: `HS_male_07` drops `..._HS_male_07` but not `..._noHS_male_07` or `..._HS_male_070`. The
+analysis-style file with `excluded_short_ids` and `excluded_batch` is accepted as is. Both `batch`
 and the Snakemake workflow read it, and the excluded files are named in the run manifest.
 
 ### Stacking the results of a batch

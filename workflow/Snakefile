@@ -7,10 +7,9 @@
 #   # HPC (SLURM, one GPU per job):
 #   snakemake -s workflow/Snakefile --configfile workflow/config.yaml \
 #             --workflow-profile config/profiles/slurm
-import fnmatch
 from pathlib import Path
 
-import yaml
+from germquant.config import load_config
 
 configfile: "workflow/config.yaml"
 
@@ -19,21 +18,20 @@ OUTPUT_ROOT = Path(config["output_root"]).resolve()
 GQ_CONFIG   = config["germquant_config"]
 XY_STRIDE   = int(config.get("xy_stride", 1))
 
-# Single source of truth for which files to process: the germquant config's io section (globs) and
-# qc.exclusions_file (study exclusions), through germquant.batch.discover_files, so `germquant batch`
-# and this Snakemake run never disagree on the file set. The workflow config may still override
+# Single source of truth for which files to process: the germquant config (loaded through the same
+# loader as `germquant run`, so a profile's `extends:` is merged): io.input_glob / io.exclude_patterns
+# and qc.exclusions_file, applied by germquant.batch.discover_files, so `germquant batch` and this
+# Snakemake run never disagree on the file set. The workflow config may still override
 # input_glob / exclude_patterns for a one-off.
-_gq_all = yaml.safe_load(Path(GQ_CONFIG).read_text()) or {}
-_gq = _gq_all.get("io", {})
-INPUT_GLOB = config.get("input_glob", _gq.get("input_glob", "**/*.nd2"))
-EXCLUDE    = config.get("exclude_patterns", _gq.get("exclude_patterns", []))
+_gq_cfg = load_config(GQ_CONFIG)
+INPUT_GLOB = config.get("input_glob", _gq_cfg.get("io.input_glob", "**/*.nd2"))
+EXCLUDE    = config.get("exclude_patterns", _gq_cfg.get("io.exclude_patterns", []))
 
 
 def _discover():
     from germquant.batch import discover_files, load_exclusions
-    from germquant.config import _base_dir_for
 
-    excl = load_exclusions(_gq_all.get("qc", {}).get("exclusions_file"), _base_dir_for(Path(GQ_CONFIG)))
+    excl = load_exclusions(_gq_cfg.get("qc.exclusions_file"), _gq_cfg.base_dir)
     files, dropped = discover_files(INPUT_ROOT, INPUT_GLOB, EXCLUDE, excl)
     for f, why in dropped:
         if why.startswith("exclusions_file"):
@@ -79,5 +77,6 @@ rule batch_summary:
     run:
         from germquant.batch import collect
 
-        counts = collect(OUTPUT_ROOT)
+        counts = collect(OUTPUT_ROOT, image_ids={p.stem for p in FILES},
+                         outlier_factor=float(_gq_cfg.get("qc.germline_outlier_factor", 1.8)))
         print(f"[germquant] collected {counts} -> {output[0]}")

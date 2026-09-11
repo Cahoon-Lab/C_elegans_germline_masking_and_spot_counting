@@ -63,6 +63,51 @@ def test_missing_extends_target_is_an_error(tmp_path):
         load_config(p)
 
 
+def test_out_of_repo_profile_inherits_base_relative_paths(tmp_path):
+    """A study profile anywhere on disk extending the shipped config resolves the channel map, model
+    and exclusions file against the BASE's repo, not against its own folder."""
+    p = tmp_path / "study.yaml"
+    p.write_text(f"extends: {(ROOT / 'config' / 'config.yaml').as_posix()}\ncoloc:\n  enabled: false\n")
+    cfg = load_config(p)
+    assert cfg.base_dir == tmp_path                                   # no config ancestor: its own folder
+    assert Path(cfg.get("io.channel_map")).is_absolute() and Path(cfg.get("io.channel_map")).is_file()
+    assert Path(cfg.get("segmentation.nuclei.cellpose_model")).is_absolute()
+    assert cfg.channel_map.roles.keys() == load_config(ROOT / "config" / "config.yaml").channel_map.roles.keys()
+    assert cfg.get("io.exclude_patterns") == load_config(ROOT / "config" / "config.yaml").get("io.exclude_patterns")
+    from germquant.pipeline import resolve_model_path
+
+    assert Path(str(resolve_model_path(cfg))).is_absolute()
+
+
+def test_empty_profile_section_raises(tmp_path):
+    p = tmp_path / "study.yaml"
+    p.write_text(f"extends: {(ROOT / 'config' / 'config.yaml').as_posix()}\ncoloc:\n  # nothing here\n")
+    with pytest.raises(ValueError, match="empty"):
+        load_config(p)
+
+
+def test_extends_cycle_and_self_are_errors(tmp_path):
+    a = tmp_path / "a.yaml"; b = tmp_path / "b.yaml"
+    a.write_text(f"extends: {b.as_posix()}\n"); b.write_text(f"extends: {a.as_posix()}\n")
+    with pytest.raises((ValueError, FileNotFoundError)):
+        load_config(a)
+
+
+def test_bare_extends_name_prefers_the_repo_config_dir(tmp_path):
+    """config/profiles/<x>/config.yaml (a Snakemake profile) must not shadow the repo's config.yaml."""
+    d = tmp_path / "config" / "profiles" / "alpine"; d.mkdir(parents=True)
+    (tmp_path / "config" / "channel_maps").mkdir()
+    for cm in (ROOT / "config" / "channel_maps").glob("*.yaml"):
+        (tmp_path / "config" / "channel_maps" / cm.name).write_text(cm.read_text())
+    (tmp_path / "config" / "config.yaml").write_text((ROOT / "config" / "config.yaml").read_text())
+    (d / "config.yaml").write_text("spots:\n  enabled: false\n")       # a snakemake profile, not a base
+    prof = tmp_path / "config" / "profiles" / "x.yaml"
+    prof.write_text("extends: config.yaml\ncoloc:\n  enabled: false\n")
+    cfg = load_config(prof)
+    assert cfg.get("spots.enabled") is True and cfg.get("coloc.enabled") is False
+    assert _base_dir_for(tmp_path / "config" / "study" / "x.yaml") == tmp_path / "config" / "study"
+
+
 def test_stage_hashes_are_per_stage():
     cfg = load_config(ROOT / "config" / "config.yaml")
     roles = {"dna": 0, "central_element": 1, "foci": 2, "granule": None, "lamin": None}

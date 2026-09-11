@@ -119,16 +119,30 @@ def write_manifest(out_dir: str | Path, *, config_hash: str, config: dict, extra
 
 
 def write_done_marker(out_dir: str | Path, image_id: str, *, config_hash: str, enabled_stages: list[str],
-                      stage_hashes: dict[str, str]) -> Path:
+                      stage_hashes: dict[str, str], xy_stride: int = 1, z_range=None,
+                      failed_stages: list[str] | None = None) -> Path:
     """``<image_id>__done.json``: written as the very last act of a successful process_image, so its
-    presence (with a matching config_hash and enabled stage set) means every output of that run is on
-    disk. Batch resume keys on it; a folder without it is reprocessed."""
+    presence (with a matching config_hash, enabled stage set and run geometry) means every output of
+    that run is on disk. Batch resume keys on it; a folder without it is reprocessed, and so is one whose
+    marker lists failed (non-fatal) stages."""
     out_dir = Path(out_dir)
     p = out_dir / f"{image_id}__done.json"
     with open(long_path(p), "w", encoding="utf-8") as fh:
         fh.write(json.dumps({"image_id": image_id, "config_hash": config_hash, "enabled_stages": enabled_stages,
-                             "stage_hashes": stage_hashes, "finished": run_timestamp()}, indent=1))
+                             "stage_hashes": stage_hashes, "xy_stride": int(xy_stride),
+                             "z_range": list(z_range) if z_range else None,
+                             "failed_stages": list(failed_stages or []), "finished": run_timestamp()}, indent=1))
     return p
+
+
+def clear_done_marker(out_dir: str | Path, image_id: str) -> None:
+    """Remove a stale marker before a rerun starts writing, so an interrupted rerun can never be
+    mistaken for a complete one."""
+    p = Path(out_dir) / f"{image_id}__done.json"
+    try:
+        os.remove(long_path(p))
+    except FileNotFoundError:
+        pass
 
 
 def read_done_marker(out_dir: str | Path, image_id: str) -> dict | None:

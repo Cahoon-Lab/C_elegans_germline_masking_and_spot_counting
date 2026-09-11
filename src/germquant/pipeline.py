@@ -51,6 +51,19 @@ _ENVELOPE_KEYS = {
 }
 
 
+def resolve_model_path(cfg):
+    """The Cellpose model the config names, resolved against the config's base_dir when it is a relative
+    path to an existing file (so a profile outside the repo still finds models/...); bare built-in names
+    such as 'cpsam' pass through unchanged."""
+    model_path = cfg.get("segmentation.nuclei.cellpose_model")
+    if not model_path:
+        return model_path
+    p = Path(str(model_path))
+    if not p.is_absolute() and (cfg.base_dir / p).is_file():
+        return cfg.base_dir / p
+    return model_path
+
+
 def process_image(
     nd2_path: str | Path,
     cfg: Config,
@@ -80,12 +93,13 @@ def process_image(
     dapi_present = role_to_idx.get("dna") is not None
 
     sample = parse_sample(nd2_path, cfg.get("metadata.filename_regex"), cfg.get("metadata.defaults"))
+    # a rerun must never leave an older run's completion marker behind (batch --resume trusts it)
+    provenance.clear_done_marker(out_dir, sample["image_id"])
     # per-stage provenance (sub-hashes, model digest, run geometry): additive fields on the manifest and
     # the stage record, never table columns, so no CSV header changes.
-    model_path = cfg.get("segmentation.nuclei.cellpose_model")
-    model_sha = provenance.file_sha256(
-        (cfg.base_dir / model_path) if model_path and not Path(str(model_path)).is_absolute()
-        and (cfg.base_dir / str(model_path)).is_file() else model_path)
+    model_file = resolve_model_path(cfg)
+    model_sha = (provenance.file_sha256(model_file)
+                 if str(cfg.get("segmentation.nuclei.method", "auto")) != "classical" else "unused")
     stage_hashes = stage_hashes_fn(cfg, role_to_idx, provenance.tool_versions(), model_sha)
     run_geometry = {"xy_stride": int(xy_stride), "z_range": list(z_range) if z_range else None,
                     "stage_hashes": stage_hashes, "model_sha256": model_sha,
@@ -129,7 +143,7 @@ def process_image(
         seg = cfg.segmentation.nuclei
         return segment_nuclei(
             dna, spacing,
-            method=seg.get("method", "auto"), cellpose_model=seg.get("cellpose_model", "cpsam"),
+            method=seg.get("method", "auto"), cellpose_model=str(model_file) if model_file else "cpsam",
             diameter_um=float(seg.get("diameter_um", 3.0)), min_volume_um3=float(seg.get("min_volume_um3", 4.0)),
         )
 
@@ -499,9 +513,11 @@ def process_image(
     finally:
         stage_record = _dump_stage_record(complete)
     # completion marker: the LAST file written, so `germquant batch --resume` can trust a folder that has
-    # it (same config_hash and the same enabled stage set) and reprocess one that does not.
-    provenance.write_done_marker(out_dir, sample["image_id"], config_hash=cfg.hash,
-                                 enabled_stages=run_geometry["enabled_stages"], stage_hashes=stage_hashes)
+    # it (same config_hash, enabled stages and run geometry, no failed stage) and reprocess one that does not.
+    provenance.write_done_marker(
+        out_dir, sample["image_id"], config_hash=cfg.hash, enabled_stages=run_geometry["enabled_stages"],
+        stage_hashes=stage_hashes, xy_stride=run_geometry["xy_stride"], z_range=run_geometry["z_range"],
+        failed_stages=[n for n, oc in outcomes.items() if oc.status == "failed"])
 
     log.info("%s: %d nuclei, %d germline, spots=%d, qc_pass=%s",
              sample["image_id"], n_nuclei, n_germline_nuclei, len(spots), qc_pass)

@@ -167,9 +167,9 @@ def _run(args) -> int:
     cfg = load_config(_resolve_config_path(args))
     _apply_switches(cfg, args)
     out = Path(args.out)
-    prov = provenance.write_manifest(out, config_hash=cfg.hash, config=cfg.as_dict())
     z_range = tuple(args.z_range) if args.z_range else None
-    res = process_image(args.nd2, cfg, out, xy_stride=args.xy_stride, z_range=z_range, prov=prov)
+    # process_image writes run_manifest.json itself (with the run geometry and per-stage hashes)
+    res = process_image(args.nd2, cfg, out, xy_stride=args.xy_stride, z_range=z_range, prov=None)
     mark = "✓" if res["qc_pass"] else "⚠"
     print(f"\n{mark} {res['image_id']}: {res['n_nuclei']} nuclei, qc_pass={res['qc_pass']}")
     if res["qc_flags"]:
@@ -202,17 +202,28 @@ def _batch(args) -> int:
         print(f"No .nd2 files matched {glob} under {root}", file=sys.stderr)
         return 1
 
+    # image-independent provenance, computed once per batch: the segment sub-hash lets --resume notice a
+    # retrained model or a Cellpose upgrade (per-image geometry lives in <id>__stages.json / __done.json)
+    from .pipeline import resolve_model_path
+    from .stages import stage_hashes as stage_hashes_fn
+
+    model_sha = (provenance.file_sha256(resolve_model_path(cfg))
+                 if str(cfg.get("segmentation.nuclei.method", "auto")) != "classical" else "unused")
+    segment_hash = stage_hashes_fn(cfg, {}, provenance.tool_versions(), model_sha)["segment"]
     prov = provenance.write_manifest(out_root, config_hash=cfg.hash, config=cfg.as_dict(),
                                      extra={"n_files": len(files), "input_root": str(root),
-                                            "excluded": [str(f) for f, _ in dropped]})
+                                            "excluded": [str(f) for f, _ in dropped],
+                                            "xy_stride": int(args.xy_stride), "model_sha256": model_sha,
+                                            "enabled_stages": B.enabled_stage_names(cfg)})
     print(f"Processing {len(files)} files -> {out_root}")
     summaries = []
+    resume = bool(getattr(args, "resume", False))
     for i, f in enumerate(files, 1):
         rel = f.relative_to(root).parent
         out_dir = out_root / rel / f.stem
         print(f"[{i}/{len(files)}] {f.name}")
-        if getattr(args, "resume", False):
-            done, why = B.is_done(out_dir, f.stem, cfg)
+        if resume:
+            done, why = B.is_done(out_dir, f.stem, cfg, xy_stride=args.xy_stride, segment_hash=segment_hash)
             if done:
                 print("    already done (completion marker matches); skipping")
                 continue
@@ -233,23 +244,16 @@ def _batch(args) -> int:
     # Framing QC: flag images whose germline count is a strong outlier vs the batch median (a robust,
     # threshold-free proxy for "two gonad arms / extra tissue / fuller distal capture in frame" — worth
     # eyeballing the montage; the axis/position readout for such gonads is unreliable). Spot COUNTS are
-    # unaffected, so this is advisory, not a failure.
-    germ = [s["n_germline"] for s in summaries if s["qc_pass"] and s["n_germline"] > 0]
-    if len(germ) >= 4:
-        import statistics
-        med = statistics.median(germ)
-        factor = float(cfg.get("qc.germline_outlier_factor", 1.8))
-        for s in summaries:
-            if med > 0 and s["n_germline"] > factor * med:
-                flag = f"qc:germline_count_outlier_{s['n_germline']}_vs_median{med:.0f}_review_framing"
-                s["qc_flags"] = f"{s['qc_flags']};{flag}" if s["qc_flags"] else flag
-
+    # unaffected, so this is advisory, not a failure. The same rule serves `collect`.
+    factor = float(cfg.get("qc.germline_outlier_factor", 1.8))
     from .fsutil import long_path
-    if getattr(args, "resume", False):
-        # a resumed batch: the authoritative summary comes from every folder on disk, not this pass
-        counts = B.collect(out_root)
+    if resume:
+        # a resumed batch: every completed folder of THIS study on disk, plus this pass's failures
+        failed = [s for s in summaries if not s["qc_pass"] and str(s["qc_flags"]).startswith("EXCEPTION")]
+        counts = B.collect(out_root, image_ids={f.stem for f in files}, extra_rows=failed, outlier_factor=factor)
         print(f"\nDone. Resumed batch collected: {counts}. Summary -> {out_root / 'batch_summary.csv'}")
         return 0
+    summaries = B.apply_framing_qc(summaries, factor)
     pd.DataFrame(summaries, columns=B.SUMMARY_COLS).to_csv(long_path(out_root / "batch_summary.csv"), index=False)
     n_pass = sum(s["qc_pass"] for s in summaries)
     print(f"\nDone. {n_pass}/{len(files)} passed QC. Summary -> {out_root / 'batch_summary.csv'}")
