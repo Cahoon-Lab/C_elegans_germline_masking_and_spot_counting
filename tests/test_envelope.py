@@ -33,10 +33,10 @@ def _stack():
     for cx in range(20, 210, 34):                              # 6 well-separated germline nuclei along x
         r = np.sqrt(((zz - 10) * SPACING[0]) ** 2 + ((yy - 40) * SPACING[1]) ** 2 + ((xx - cx) * SPACING[2]) ** 2)
         dapi += np.exp(-r ** 2 / (2 * 1.6 ** 2)) * 1500.0
-        lamin += np.exp(-((r - 1.8) ** 2) / (2 * 0.2 ** 2)) * 3000.0     # a ring just outside the chromatin
+        lamin += np.exp(-((r - 3.0) ** 2) / (2 * 0.2 ** 2)) * 3000.0     # a ring outside the segmented chromatin
         syp[10, 40, max(0, cx - 6):min(X, cx + 6)] = 2000.0
-        pgl[10, 49, min(cx + 2, X - 1)] = 4000.0                          # a perinuclear granule
-    for jx in (290, 320):                                                 # off-germline DAPI junk, no ring
+        pgl[10, 60, min(cx + 2, X - 1)] = 4000.0                          # a perinuclear granule, 1 um outside the ring
+    for jx in (290, 330):                                                 # off-germline DAPI junk, no ring
         r = np.sqrt(((zz - 10) * SPACING[0]) ** 2 + ((yy - 40) * SPACING[1]) ** 2 + ((xx - jx) * SPACING[2]) ** 2)
         dapi += np.exp(-r ** 2 / (2 * 1.6 ** 2)) * 1500.0
     rng = np.random.default_rng(0)
@@ -65,7 +65,7 @@ def _cfg(**switches):
 
 def test_envelope_functions_on_a_ring():
     st = _stack()
-    labels, n = ndi.label(st.data[0] > 1000)          # bright chromatin cores, one label per nucleus
+    labels, n = ndi.label(st.data[0] > 400)           # chromatin blobs (r about 2.6 um), one label per nucleus
     labels = labels.astype(np.int32)
     ids = list(range(1, n + 1))
     assert n == 8                                       # 6 germline nuclei + 2 junk blobs

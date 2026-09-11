@@ -356,7 +356,11 @@ def process_image(
 
     def _granule():
         nonlocal nuclei
-        ctx = _run_granule(stack, labels, role_to_idx, nuclei, spacing, cfg)
+        ctx = _run_granule(stack, labels, role_to_idx, nuclei, spacing, cfg, env_ctx=env_ctx)
+        if ctx["method"] != "threshold_triangle" or ctx["region_kind"] != "coloc_region":
+            # only a non-default recipe is flagged, so the qc_flags text of the validated default path
+            # (and its goldens) stays byte-identical
+            flags.append(f"granule:method={ctx['method']},region={ctx['region_kind']}")
         per_nuc = ctx["per_nuc"]
         if per_nuc is not None and not nuclei.empty:
             df = nuclei
@@ -604,11 +608,17 @@ def _granule_kwargs(cfg) -> dict:
     }
 
 
-def _run_granule(stack, labels, role_to_idx, nuclei, spacing, cfg) -> dict:
+def _run_granule(stack, labels, role_to_idx, nuclei, spacing, cfg, env_ctx: dict | None = None) -> dict:
     """Granule stage: build the perinuclear region and cytoplasmic shell, surface the PGL-1 granules in
     the region and assign them to nuclei. Returns the context dict the coloc stage consumes
-    (region, shell, granule labels/mask, assigned granules table, per-nucleus tallies)."""
-    from .granule import segment_granules
+    (region, shell, granule labels/mask, assigned granules table, per-nucleus tallies).
+
+    Two recipes (`granule.method`): the validated default `threshold_triangle` over the coloc region
+    (unchanged), and `imaris_tophat` (docs/ROADMAP_modular_pipeline.md step 8), the August 2026
+    Imaris-calibrated recipe, normally with `granule.region: cytoplasm_shell` = the cytoplasm within
+    `envelope.cyto_um` of the lamin envelope (or of the DAPI nuclei when the envelope stage did not run),
+    computed inside the padded germline crop exactly as the analysis scripts did."""
+    from .granule import segment_granules, segment_granules_tophat
 
     germ_ids = {int(v) for v in nuclei["nucleus_id"].tolist()}
     region_name = str(cfg.get("coloc.region", "perinuclear_shell"))
@@ -629,15 +639,49 @@ def _run_granule(stack, labels, role_to_idx, nuclei, spacing, cfg) -> dict:
         nuc_union, spacing, dilation_um, lamin_img, use_lamin, shell)
     g_kw = _granule_kwargs(cfg)
 
-    # PGL-1 granules across the whole perinuclear region
-    granule_labels, granules = segment_granules(
-        pgl, region, spacing, marker=cfg.channel_map.marker("granule"), **g_kw)
+    method = str(cfg.get("granule.method", "threshold_triangle"))
+    region_kind = str(cfg.get("granule.region", "coloc_region"))
+    cyto_ctx = None
+    if method == "imaris_tophat":
+        from .envelope import cytoplasm_shell, germline_crop
+        from .granule.segment import TOPHAT_DEFAULTS
+
+        t_kw = {k: float(cfg.get(f"granule.tophat.{k}", v)) for k, v in TOPHAT_DEFAULTS.items()}
+        cyto_um = float(cfg.get("envelope.cyto_um", 2.5))
+        if region_kind == "cytoplasm_shell":
+            # the August frame: the germline bounding box padded by 30 voxels; envelope labels from the
+            # envelope stage, else the DAPI nuclei themselves
+            sl = env_ctx["crop"] if env_ctx is not None else germline_crop(labels, germ_ids)
+            env_mask = (env_ctx["envelope_labels"][sl] > 0) if env_ctx is not None else nuc_union[sl]
+            region_kind = "cytoplasm_shell" if env_ctx is not None else "cytoplasm_shell_dapi"
+            cyto_c, dt_c = cytoplasm_shell(env_mask, spacing, cyto_um)
+            lab_c, _gran_c = segment_granules_tophat(np.asarray(pgl)[sl], cyto_c, spacing,
+                                                     marker=cfg.channel_map.marker("granule"), **t_kw)
+            granule_labels = np.zeros(labels.shape, np.int32)
+            granule_labels[sl] = lab_c
+            # re-measure on the full grid so centroids are whole-image microns
+            from .granule.segment import _measure
+
+            granules = _measure(granule_labels, np.asarray(pgl).astype(np.float32), np.asarray(spacing, float),
+                                cfg.channel_map.marker("granule"))
+            if not granules.empty:
+                granules["detector"] = "imaris_tophat_cc"
+            cyto_ctx = {"crop": sl, "cyto": cyto_c, "dt": dt_c, "env_mask": env_mask, "cyto_um": cyto_um}
+        else:
+            granule_labels, granules = segment_granules_tophat(
+                pgl, region, spacing, marker=cfg.channel_map.marker("granule"), **t_kw)
+    else:
+        region_kind = "coloc_region"
+        # PGL-1 granules across the whole perinuclear region (the validated default; unchanged)
+        granule_labels, granules = segment_granules(
+            pgl, region, spacing, marker=cfg.channel_map.marker("granule"), **g_kw)
     granules, per_nuc = _assign_granules_to_nuclei(granules, nuclei)
     return {
         "germ_ids": germ_ids, "region_name": region_name, "dilation_um": dilation_um,
         "region": region, "nuc_union": nuc_union, "shell": shell, "shell_region_name": shell_region_name,
         "syp": syp, "pgl": pgl, "granule_labels": granule_labels, "granule_mask": granule_labels > 0,
-        "granules": granules, "per_nuc": per_nuc,
+        "granules": granules, "per_nuc": per_nuc, "method": method, "region_kind": region_kind,
+        "cyto_ctx": cyto_ctx,
     }
 
 
