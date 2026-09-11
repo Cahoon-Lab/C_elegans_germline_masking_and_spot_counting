@@ -116,7 +116,7 @@ def territories(lab_c: np.ndarray, germ_ids, spacing, *, territory_dilate_um=4.0
         yi = min(max(int(round(c[1])), 0), comp.shape[0] - 1)
         xi = min(max(int(round(c[2])), 0), comp.shape[1] - 1)
         rows.append({"nucleus_id": int(i), "territory_id": int(comp[yi, xi])})
-    return pd.DataFrame(rows, columns=["nucleus_id", "territory_id"]), int(n)
+    return pd.DataFrame(rows, columns=["nucleus_id", "territory_id"]), int(n), comp
 
 
 def cytoplasm_shell(env_mask: np.ndarray, spacing, cyto_um=2.5) -> tuple[np.ndarray, np.ndarray]:
@@ -140,13 +140,23 @@ def run_envelope(labels: np.ndarray, germ_ids, lamin: np.ndarray, spacing, param
     scores, thr = ring_scores(lab_c, ids, lam_c, spacing, ring_smooth_um=p["ring_smooth_um"],
                               ring_shell_um=p["ring_shell_um"])
     junk = set(no_envelope_ids(scores, ring_ratio_max=p["ring_ratio_max"], shell_over_thr_max=p["shell_over_thr_max"]))
-    terr, n_terr = territories(lab_c, ids, spacing, territory_dilate_um=p["territory_dilate_um"])
+    terr, n_terr, terr_map = territories(lab_c, ids, spacing, territory_dilate_um=p["territory_dilate_um"])
     per = per.merge(scores[["nucleus_id", "ring_ratio", "shell_over_thr"]], on="nucleus_id", how="left")
     per = per.merge(terr, on="nucleus_id", how="left")
     per["has_envelope"] = ~per["nucleus_id"].isin(junk)
+    # envelope centroids in whole-image microns (the staging analysis projected THESE onto the trace)
+    sp = np.asarray(spacing, dtype=float)
+    ids_present = [i for i in ids if (env_c == i).any()]
+    coms = ndi.center_of_mass(env_c > 0, env_c, ids_present) if ids_present else []
+    cent = pd.DataFrame([{"nucleus_id": int(i),
+                          "envelope_centroid_z_um": (c[0] + sl[0].start) * sp[0],
+                          "envelope_centroid_y_um": (c[1] + sl[1].start) * sp[1],
+                          "envelope_centroid_x_um": (c[2] + sl[2].start) * sp[2]} for i, c in zip(ids_present, coms)],
+                        columns=["nucleus_id", "envelope_centroid_z_um", "envelope_centroid_y_um", "envelope_centroid_x_um"])
+    per = per.merge(cent, on="nucleus_id", how="left")
     env_full = np.zeros(labels.shape, np.int32)
     env_full[sl] = env_c
-    vvol = float(np.prod(np.asarray(spacing, dtype=float)))
+    vvol = float(np.prod(sp))
     junk_vol = float(per.loc[~per["has_envelope"], "envelope_volume_um3"].sum())
     total_vol = float(per["envelope_volume_um3"].sum())
     summary = {
@@ -158,4 +168,4 @@ def run_envelope(labels: np.ndarray, germ_ids, lamin: np.ndarray, spacing, param
         "ring_thr": thr,
     }
     return {"envelope_labels": env_full, "crop": sl, "per_nucleus": per, "summary": summary,
-            "no_envelope_ids": sorted(junk), "voxel_volume_um3": vvol}
+            "no_envelope_ids": sorted(junk), "voxel_volume_um3": vvol, "territory_map": terr_map}

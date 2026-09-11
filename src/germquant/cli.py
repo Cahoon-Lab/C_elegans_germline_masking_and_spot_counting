@@ -59,6 +59,22 @@ def main(argv: list[str] | None = None) -> int:
                                         "and rebuild batch_summary.csv (safe to rerun any time)")
     pc.add_argument("results_root")
 
+    pt = sub.add_parser("trace", help="draw the pachytene region on each finished image (pop-up); saves the "
+                                      "polylines in whole-image microns to the traces file the staging stage reads")
+    pt.add_argument("results_root")
+    pt.add_argument("image_ids", nargs="*", help="only these images (default: every finished image without a trace)")
+    _add_config_args(pt)
+    pt.add_argument("--traces", help="traces JSON (default: staging.traces_file of the config)")
+    pt.add_argument("--redo", action="store_true", help="also show images that already have a trace")
+    pt.add_argument("--stride", type=int, default=2, help="xy stride of the display (2 = half resolution)")
+
+    ps = sub.add_parser("restage", help="recompute <image_id>__zones.csv for finished images from the traces file "
+                                        "(cheap geometry; nothing else is touched)")
+    ps.add_argument("results_root")
+    ps.add_argument("image_ids", nargs="*")
+    _add_config_args(ps)
+    ps.add_argument("--traces")
+
     pv = sub.add_parser("validate", help="compare pipeline output to hand-scored ground truth")
     pv.add_argument("--pred", help="pipeline CSV (counts/lengths mode)")
     pv.add_argument("--truth", help="ground-truth CSV")
@@ -96,6 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         "run": lambda: _run(args),
         "batch": lambda: _batch(args),
         "collect": lambda: _collect(args),
+        "trace": lambda: _trace(args),
+        "restage": lambda: _restage(args),
         "validate": lambda: _validate(args),
         "prep-training": lambda: _prep_training(args),
         "finetune": lambda: _finetune(args),
@@ -257,6 +275,41 @@ def _batch(args) -> int:
     pd.DataFrame(summaries, columns=B.SUMMARY_COLS).to_csv(long_path(out_root / "batch_summary.csv"), index=False)
     n_pass = sum(s["qc_pass"] for s in summaries)
     print(f"\nDone. {n_pass}/{len(files)} passed QC. Summary -> {out_root / 'batch_summary.csv'}")
+    return 0
+
+
+def _traces_path(cfg, args) -> Path:
+    tf = getattr(args, "traces", None) or cfg.get("staging.traces_file", "staging/pachytene_traces.json")
+    return Path(tf) if Path(tf).is_absolute() else cfg.base_dir / tf
+
+
+def _trace(args) -> int:
+    from .staging import load_traces
+    from .staging.tracer import results_images, run_gui
+
+    cfg = load_config(_resolve_config_path(args))
+    tf = _traces_path(cfg, args)
+    items = results_images(args.results_root)
+    have = load_traces(tf)
+    if args.image_ids:
+        items = [it for it in items if it[0] in set(args.image_ids)]
+    elif not args.redo:
+        items = [it for it in items if have.get(it[0], {}).get("status") not in ("traced", "skipped")]
+    if not items:
+        print("nothing to trace (use --redo to revisit traced images)")
+        return 0
+    print(f"{len(items)} image(s) to trace -> {tf}")
+    run_gui(items, cfg, tf, stride=int(args.stride),
+            off_axis_um=float(cfg.get("staging.off_axis_um") or 20.0))
+    return 0
+
+
+def _restage(args) -> int:
+    from .staging.tracer import restage
+
+    cfg = load_config(_resolve_config_path(args))
+    done = restage(args.results_root, _traces_path(cfg, args), cfg, args.image_ids or None)
+    print(f"restaged {len(done)} image(s)")
     return 0
 
 

@@ -34,7 +34,15 @@ NUCLEI = [
     # somatic / debris) and the 2D territory the nucleus belongs to
     "envelope_volume_um3", "envelope_vol_ratio", "envelope_fallback", "ring_ratio", "shell_over_thr",
     "has_envelope", "territory_id",
+    "envelope_centroid_z_um", "envelope_centroid_y_um", "envelope_centroid_x_um",
+    # staging stage (hand-traced pachytene axis): zone early/mid/late/pre/post/off_axis, arc length and
+    # perpendicular distance to the trace, pachytene membership, territory crossed by the trace
+    "zone", "s_um", "r_um", "is_pachytene", "in_territory", "off_axis_cut_um",
 ]
+
+# staging stage: one row per germline nucleus (the same columns as appended to nuclei; `germquant
+# restage` rewrites only this table)
+ZONES = ["nucleus_id", "zone", "s_um", "r_um", "is_pachytene", "in_territory", "off_axis_cut_um"]
 
 # mask audit (audit stage): one row per lamin-only nucleus candidate and per germline label
 MASK_AUDIT = [
@@ -113,6 +121,9 @@ IMAGE_SUMMARY = [
     "n_envelope_fallback", "envelope_vol_ratio", "n_no_envelope", "no_envelope_vol_frac", "n_territories", "ring_thr",
     # audit stage
     "n_lamin_candidates", "n_missed_nuclei", "n_missed_unlabelled",
+    # staging stage
+    "n_zoned_nuclei", "pachytene_length_um", "off_axis_cut_um", "n_early", "n_mid", "n_late", "n_off_axis",
+    "n_territories_on_trace",
 ]
 
 TABLES = {
@@ -124,6 +135,7 @@ TABLES = {
     "sc_tracks": SC_TRACKS,
     "sc_per_nucleus": SC_PER_NUCLEUS,
     "mask_audit": MASK_AUDIT,
+    "zones": ZONES,
 }
 
 # which stage owns which table (nuclei and image_summary are shared: every stage may append columns).
@@ -134,4 +146,5 @@ STAGE_TABLES = {
     "coloc": ["coloc"],
     "sc_trace": ["sc_tracks", "sc_per_nucleus"],
     "audit": ["mask_audit"],
+    "staging": ["zones"],
 }

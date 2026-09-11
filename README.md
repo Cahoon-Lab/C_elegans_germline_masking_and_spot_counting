@@ -86,6 +86,22 @@ writes `batch_nuclei.csv`, `batch_spots.csv`, `batch_granules.csv`, `batch_coloc
 `batch_image_summary.csv` (every per-image table stacked, one file each) next to `batch_summary.csv`.
 Run it whenever you like, for example after reprocessing a few images.
 
+### Staging pachytene by hand
+
+Automatic pachytene staging was never reliable enough on these gonads, so it is drawn by hand once
+per image and reused by every stage that needs it:
+
+```
+.venv\Scripts\germquant.exe trace "C:\path\to\RESULTS_FOLDER" --config config\config_ccw77.yaml
+```
+
+opens each finished image (DAPI grey, SYP red; scroll for single planes) and you click a line from
+the pachytene start to its end, then press Enter. The line is saved in whole-image microns to the
+traces file named by `staging.traces_file` in the config. With `staging.enabled: true` the pipeline
+then assigns every germline nucleus a zone (early, mid, late thirds of your line, or pre, post,
+off_axis). `germquant restage RESULTS --config ...` recomputes the zones after you redraw a line,
+without reprocessing the image.
+
 ### Choosing what to measure (profiles)
 
 Instead of `--config config\config.yaml` you can name a profile: `--profile rad51_foci` (RAD-51 foci

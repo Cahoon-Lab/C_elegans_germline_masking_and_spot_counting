@@ -79,8 +79,8 @@ def test_envelope_functions_on_a_ring():
     # the ring-less junk blobs (x > 280) are flagged, the ringed nuclei are not
     cx = pd.Series({i: c[2] for i, c in zip(ids, ndi.center_of_mass(labels > 0, labels, ids))})
     assert all(cx[j] > 280 for j in junk) and len(junk) == 2
-    terr, n_terr = territories(labels, ids, SPACING)
-    assert n_terr >= 2 and set(terr["territory_id"]) and len(terr) == len(ids)
+    terr, n_terr, tmap = territories(labels, ids, SPACING)
+    assert n_terr >= 2 and set(terr["territory_id"]) and len(terr) == len(ids) and tmap.shape == labels.shape[1:]
     cyto, _dt = cytoplasm_shell(env > 0, SPACING, 2.5)
     assert cyto.any() and not (cyto & (env > 0)).any()
     out = run_envelope(labels, ids, st.data[3], SPACING)

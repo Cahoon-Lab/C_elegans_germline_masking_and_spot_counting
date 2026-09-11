@@ -248,6 +248,46 @@ def process_image(
     if axis_res is not None:
         nuclei, axis_conf = axis_res
 
+    # ---- pachytene staging from the hand-traced axis (staging.traces_file) ----
+    zones_table = pd.DataFrame(columns=schema.ZONES)
+    staging_summary_fields: dict = {}
+    stag_ctx = None
+    trace = None
+    stag_on = stage_enabled(cfg, "staging")
+    if stag_on:
+        from .staging import load_traces
+
+        tf = cfg.get("staging.traces_file", "staging/pachytene_traces.json")
+        tf_path = Path(tf) if Path(tf).is_absolute() else cfg.base_dir / tf
+        trace = load_traces(tf_path).get(sample["image_id"])
+
+    def _staging():
+        nonlocal nuclei
+        from .staging import run_staging
+
+        df = nuclei
+        use_env = str(cfg.get("staging.centroid", "envelope")) == "envelope" and "envelope_centroid_x_um" in df.columns \
+            and df["envelope_centroid_x_um"].notna().any()
+        work = df.copy()
+        if use_env:                       # project the envelope centroids, as the August analysis did
+            for ax_ in ("x", "y"):
+                work[f"centroid_{ax_}_um"] = work[f"envelope_centroid_{ax_}_um"].fillna(work[f"centroid_{ax_}_um"])
+        res = run_staging(work, trace, spacing, env_ctx=env_ctx,
+                          off_axis_um=cfg.get("staging.off_axis_um"), adaptive=bool(cfg.get("staging.adaptive_cutoff", True)))
+        nuclei = df.merge(res["zones"], on="nucleus_id", how="left")
+        flags.append(f"staging:zoned_n={res['summary']['n_zoned_nuclei']},centroid={'envelope' if use_env else 'dapi'}")
+        return res
+
+    stag_ctx = run_stage("staging", _staging, flags=flags, outcomes=outcomes,
+                         enabled=stag_on and trace is not None and trace.get("status") == "traced" and not nuclei.empty,
+                         skip_reason=("disabled" if not stag_on else
+                                      "no trace for this image in staging.traces_file" if trace is None else
+                                      f"trace status {trace.get('status')!r}" if trace.get("status") != "traced"
+                                      else "no germline nuclei"))
+    if stag_ctx is not None:
+        zones_table = stag_ctx["zones"]
+        staging_summary_fields = dict(stag_ctx["summary"])
+
     # ---- spots (SpotMAX) — RAD-51 (or other) foci per nucleus.
     # Detects peaks ABOVE local background inside each nucleus mask, merges z-axis spot-splits, and
     # tags every spot with its effect size. Detection params are cross-validated vs Imaris (config). ----
@@ -426,7 +466,7 @@ def process_image(
         "qc_pass": qc_pass, "qc_flags": ";".join(qc_all),
         "segmentation_method": seg_method, "axis_confidence": axis_conf,
         **coloc_summary_fields, **sc_summary_fields, **env_summary_fields, **audit_summary_fields,
-        **acq_fields,
+        **acq_fields, **staging_summary_fields,
     }])
 
     # ---- write outputs ----
@@ -453,7 +493,8 @@ def process_image(
         nuclei = pd.concat([nuclei, excluded], ignore_index=True)
     tables = {"nuclei": nuclei, "spots": spots, "granules": granules,
               "coloc": coloc, "image_summary": image_summary,
-              "sc_tracks": sc_tracks, "sc_per_nucleus": sc_per_nuc, "mask_audit": audit_table}
+              "sc_tracks": sc_tracks, "sc_per_nucleus": sc_per_nuc, "mask_audit": audit_table,
+              "zones": zones_table}
 
     def _write():
         _write_tables(tables, shared, out_dir, sample["image_id"], cfg.get("output.formats", ["csv"]))
