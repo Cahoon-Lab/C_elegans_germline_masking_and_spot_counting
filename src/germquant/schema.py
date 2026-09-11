@@ -44,6 +44,15 @@ NUCLEI = [
 # restage` rewrites only this table)
 ZONES = ["nucleus_id", "zone", "s_um", "r_um", "is_pachytene", "in_territory", "off_axis_cut_um"]
 
+# partition stage: one row per region (whole shell; early / mid / late / pach when staged)
+PARTITION = [
+    "region", "n_granules", "granule_voxels", "outside_voxels", "region_voxels", "bg",
+    "partition_coef", "partition_coef_rot", "partition_coef_zshift", "partition_coef_specific",
+]
+
+# granule_tail stage: one row per re-segmented granule (v4 envelope set, no-envelope nuclei dropped)
+GRANULE_TAIL = ["granule_id", "excess_n", "syp_excess", "pgl_raw", "pgl_n", "vol_um3", "dist_um", "dmin_um"]
+
 # mask audit (audit stage): one row per lamin-only nucleus candidate and per germline label
 MASK_AUDIT = [
     "kind", "object_id", "vol_um3", "z_um", "y_um", "x_um", "cov_germ_label", "cov_any_label",
@@ -124,6 +133,14 @@ IMAGE_SUMMARY = [
     # staging stage
     "n_zoned_nuclei", "pachytene_length_um", "off_axis_cut_um", "n_early", "n_mid", "n_late", "n_off_axis",
     "n_territories_on_trace",
+    # partition stage (whole shell, and the pooled hand-traced pachytene region when staged)
+    "partition_coef_whole", "partition_coef_rot_whole", "partition_coef_zshift_whole", "partition_coef_specific_whole",
+    "partition_bg", "partition_coef_early", "partition_coef_specific_early", "partition_coef_mid",
+    "partition_coef_specific_mid", "partition_coef_late", "partition_coef_specific_late",
+    "partition_coef_pach", "partition_coef_specific_pach",
+    # granule_tail stage (lit fraction)
+    "tail_n_granules", "tail_n_no_envelope_dropped", "tail_nuclear_syp", "tail_frac_excess_gt_0.25",
+    "tail_frac_excess_gt_0.5", "tail_frac_excess_gt_1.0", "tail_excess_p50", "tail_excess_p90", "tail_excess_p99",
 ]
 
 TABLES = {
@@ -136,6 +153,8 @@ TABLES = {
     "sc_per_nucleus": SC_PER_NUCLEUS,
     "mask_audit": MASK_AUDIT,
     "zones": ZONES,
+    "partition": PARTITION,
+    "granule_tail": GRANULE_TAIL,
 }
 
 # which stage owns which table (nuclei and image_summary are shared: every stage may append columns).
@@ -147,4 +166,6 @@ STAGE_TABLES = {
     "sc_trace": ["sc_tracks", "sc_per_nucleus"],
     "audit": ["mask_audit"],
     "staging": ["zones"],
+    "partition": ["partition"],
+    "granule_tail": ["granule_tail"],
 }

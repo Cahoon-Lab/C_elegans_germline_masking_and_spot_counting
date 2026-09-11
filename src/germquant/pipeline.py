@@ -445,6 +445,68 @@ def process_image(
         # without coloc; consumers key off __stages.json / the coloc:FAILED_ flag, not on n_granules.
         coloc_summary_fields = _coloc_summary(coloc, granules)
 
+    # ---- partition coefficient (SYP-3 into P granules) and the per-granule lit fraction ----
+    # Both work in the padded germline crop of the August analysis; the envelope stage supplies the
+    # envelope, else the DAPI nuclei stand in (flagged). The granule mask is the granule stage's.
+    partition_table = pd.DataFrame(columns=schema.PARTITION)
+    partition_summary: dict = {}
+    tail_table = pd.DataFrame(columns=schema.GRANULE_TAIL)
+    tail_summary: dict = {}
+
+    def _pc_frame():
+        """(crop slice, envelope labels crop, envelope mask crop, source name)."""
+        from .envelope import germline_crop
+
+        if env_ctx is not None:
+            sl = env_ctx["crop"]
+            env_lab = env_ctx["envelope_labels"][sl]
+            return sl, env_lab, env_lab > 0, "envelope"
+        ids = [int(v) for v in nuclei["nucleus_id"].tolist()]
+        sl = germline_crop(labels, ids)
+        lab_c = np.where(np.isin(labels[sl], ids), labels[sl], 0).astype(np.int32)
+        return sl, lab_c, lab_c > 0, "dapi"
+
+    def _partition():
+        from .partition import run_partition
+
+        sl, env_lab, env_mask, src = _pc_frame()
+        pre = gran_ctx.get("cyto_ctx") if gran_ctx is not None else None
+        if pre is not None and pre["crop"] != sl:
+            pre = None
+        res = run_partition(gran_ctx["syp"][sl], gran_ctx["granule_labels"][sl] > 0, env_mask, spacing,
+                            cyto_um=float(cfg.get("envelope.cyto_um", 2.5)),
+                            bg_percentile=float(cfg.get("partition.bg_percentile", 3.0)),
+                            env_labels_c=env_lab, zones=zones_table if len(zones_table) else None,
+                            dz=int(cfg.get("partition.zshift_planes", 6)), precomputed=pre)
+        flags.append(f"partition:frame={src},granules={gran_ctx['method']}")
+        return res
+
+    part_on = stage_enabled(cfg, "partition")
+    part_res = run_stage("partition", _partition, flags=flags, outcomes=outcomes,
+                         enabled=part_on and gran_ctx is not None,
+                         skip_reason="disabled" if not part_on else "granule stage did not run")
+    if part_res is not None:
+        partition_table, partition_summary = part_res["table"], dict(part_res["summary"])
+
+    def _tail():
+        from .granule.segment import TOPHAT_DEFAULTS
+        from .partition import run_granule_tail
+
+        sl, env_lab, _env_mask, src = _pc_frame()
+        drop = env_ctx["no_envelope_ids"] if env_ctx is not None else []
+        res = run_granule_tail(gran_ctx["syp"][sl], gran_ctx["pgl"][sl], env_lab, spacing, drop_ids=drop,
+                               cyto_um=float(cfg.get("envelope.cyto_um", 2.5)),
+                               tophat_kw={k: float(cfg.get(f"granule.tophat.{k}", v)) for k, v in TOPHAT_DEFAULTS.items()})
+        flags.append(f"granule_tail:frame={src},dropped={len(drop)}")
+        return res
+
+    tail_on = stage_enabled(cfg, "granule_tail")
+    tail_res = run_stage("granule_tail", _tail, flags=flags, outcomes=outcomes,
+                         enabled=tail_on and gran_ctx is not None,
+                         skip_reason="disabled" if not tail_on else "granule stage did not run")
+    if tail_res is not None:
+        tail_table, tail_summary = tail_res["table"], dict(tail_res["summary"])
+
     # ---- QC ----
     t_qc = time.perf_counter()
     qc_pass, qc_all = qc.qc_flags(
@@ -466,7 +528,7 @@ def process_image(
         "qc_pass": qc_pass, "qc_flags": ";".join(qc_all),
         "segmentation_method": seg_method, "axis_confidence": axis_conf,
         **coloc_summary_fields, **sc_summary_fields, **env_summary_fields, **audit_summary_fields,
-        **acq_fields, **staging_summary_fields,
+        **acq_fields, **staging_summary_fields, **partition_summary, **tail_summary,
     }])
 
     # ---- write outputs ----
@@ -494,7 +556,7 @@ def process_image(
     tables = {"nuclei": nuclei, "spots": spots, "granules": granules,
               "coloc": coloc, "image_summary": image_summary,
               "sc_tracks": sc_tracks, "sc_per_nucleus": sc_per_nuc, "mask_audit": audit_table,
-              "zones": zones_table}
+              "zones": zones_table, "partition": partition_table, "granule_tail": tail_table}
 
     def _write():
         _write_tables(tables, shared, out_dir, sample["image_id"], cfg.get("output.formats", ["csv"]))

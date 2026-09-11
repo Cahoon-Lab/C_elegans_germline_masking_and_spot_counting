@@ -79,6 +79,12 @@ STAGES: tuple[Stage, ...] = (
           "SYP <-> PGL-1 colocalization (shell voxel, partition coefficient, operands)",
           legacy_cli_help="skip PGL-1 granule surfacing + SYP<->PGL-1 colocalization stage",
           config_sections=("coloc", "sc", "granule")),
+    Stage("partition", "partition.enabled", False, ("granule", "central_element"), True,
+          "SYP-3 partition coefficient into P granules (distance-matched, rotation null, z-shift floor; "
+          "per zone and pooled pachytene when staged)", config_sections=("partition", "envelope", "granule", "staging")),
+    Stage("granule_tail", "granule_tail.enabled", False, ("granule", "central_element"), True,
+          "per-granule SYP-3 excess in nuclear units and the lit fraction (no-envelope nuclei dropped)",
+          config_sections=("granule_tail", "envelope", "granule")),
     Stage("qc", None, True, (), False, "QC flags and pass/fail", config_sections=("qc",)),
     Stage("render", "render.montage", True, (), False, "montage PNG", config_sections=("render",)),
     Stage("write", None, True, (), False, "tables, label images, masks, manifest", config_sections=("output",)),
@@ -170,7 +176,7 @@ _STAGE_TOOLS = {
     "read": ("nd2",), "segment": ("cellpose", "torch"), "measure": ("scikit-image",),
     "spots": ("spotmax", "cellacdc", "cupy"), "sc_trace": ("skan", "scikit-image", "scipy"),
     "granule": ("scikit-image", "scipy"),
-    "coloc": ("scikit-image", "scipy"),
+    "coloc": ("scikit-image", "scipy"), "partition": ("scipy",), "granule_tail": ("scipy",),
 }
 
 
