@@ -102,6 +102,22 @@ then assigns every germline nucleus a zone (early, mid, late thirds of your line
 off_axis). `germquant restage RESULTS --config ...` recomputes the zones after you redraw a line,
 without reprocessing the image.
 
+### Counting a second kind of focus (COSA-1 crossovers)
+
+The spot counter is not tied to RAD-51. A profile can declare further instances of it, each on its
+own channel role with its own table and nucleus column, for example COSA-1 crossover foci:
+
+```
+spots:
+  instances:
+    - name: crossover           # -> table spots_crossover, nuclei column n_spots_crossover
+      role: crossover_foci      # a role you add to a channel map (do not edit the shipped maps)
+      restrict_to_zone: late    # late-pachytene mean when the staging stage has run
+      expected_from_germ_cell: true   # 6 per oocyte, 5 per spermatocyte, reported next to the mean
+```
+
+Detection parameters default to the `spots` block and can be overridden per instance.
+
 ### Choosing what to measure (profiles)
 
 Instead of `--config config\config.yaml` you can name a profile: `--profile rad51_foci` (RAD-51 foci

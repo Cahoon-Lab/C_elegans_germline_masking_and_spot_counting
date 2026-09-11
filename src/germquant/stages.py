@@ -66,7 +66,8 @@ STAGES: tuple[Stage, ...] = (
           "pachytene zones (early / mid / late) from the hand-traced axis in staging.traces_file",
           config_sections=("staging",)),
     Stage("spots", "spots.enabled", True, ("foci",), True,
-          "SpotMAX spot counting in the `foci` channel (RAD-51)",
+          "SpotMAX spot counting in the `foci` channel (RAD-51); further instances (COSA-1 crossover foci) "
+          "via spots.instances, each on its own channel role with its own table and column",
           legacy_cli_help="segmentation only: skip RAD-51/SpotMAX spot detection (fast, never wedges)",
           config_sections=("spots",)),
     Stage("sc_trace", "sc.trace.enabled", False, ("central_element",), True,

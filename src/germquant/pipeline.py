@@ -326,6 +326,65 @@ def process_image(
     if spots_res is not None:
         spots, per_nuc_spots, nuclei = spots_res
 
+    # ---- further spot instances (COSA-1 crossover foci, ...): the same detector on another channel role.
+    # `spots.instances` is read with a code default of none, so the RAD-51 path above is untouched. Each
+    # instance gets its own table (spots_<name>), nuclei column (n_spots_<name>), flag and summary; an
+    # optional late-pachytene restriction (needs the staging stage) and an expected count per nucleus
+    # (6 oocyte / 5 spermatocyte bivalents) turn it into a crossover-designation readout. ----
+    extra_spot_tables: dict[str, pd.DataFrame] = {}
+    extra_spot_cols: list[str] = []
+    spot_instance_summary: dict = {}
+    for inst in list(cfg.get("spots.instances", []) or []):
+        name = str(inst.get("name", inst.get("role", "extra")))
+        role = str(inst.get("role", "crossover_foci"))
+        table_name = str(inst.get("table", f"spots_{name}"))
+        col = str(inst.get("column", f"n_spots_{name}"))
+        extra_spot_tables[table_name] = pd.DataFrame(columns=schema.SPOTS)
+        extra_spot_cols.append(col)
+        r_idx = role_to_idx.get(role)
+
+        def _inst(inst=inst, name=name, role=role, table_name=table_name, col=col, r_idx=r_idx):
+            nonlocal nuclei
+            from .io.sample_metadata import expected_sc_count
+            from .spots import detect_spots
+
+            def p(key, default):
+                return inst.get(key, cfg.get(f"spots.{key}", default))
+
+            per_spot, per_nuc = detect_spots(
+                stack.data[r_idx], labels, spacing, marker=cfg.channel_map.marker(role),
+                spot_radius_um=float(p("spot_radius_um", 0.3)), gauss_sigma_um=float(p("gauss_sigma_um", 0.08)),
+                thresholding_method=p("thresholding_method", "threshold_triangle"),
+                effect_size_metric=p("effect_size_metric", "spot_vs_backgr_effect_size_glass"),
+                effect_size_min=float(p("effect_size_min", 3.0)), merge_z_columns=bool(p("merge_z_columns", True)),
+                z_merge_gap_um=float(p("z_merge_gap_um", 0.8)), z_merge_valley_frac=float(p("z_merge_valley_frac", 0.8)),
+                max_spot_candidates=int(p("max_spot_candidates", 30000)),
+            )
+            df = nuclei
+            if not df.empty:
+                counts = per_nuc.set_index("nucleus_id")["n_spots"] if not per_nuc.empty else pd.Series(dtype=float)
+                df = df.copy()
+                df[col] = df["nucleus_id"].map(counts).fillna(0).astype(int)
+            summ = {f"mean_{col}": float(df[col].mean()) if (not df.empty and col in df) else float("nan")}
+            zone = inst.get("restrict_to_zone")
+            if zone and "zone" in df.columns:
+                sel = df[df["zone"] == zone]
+                summ[f"mean_{col}_{zone}"] = float(sel[col].mean()) if len(sel) else float("nan")
+                summ[f"n_nuclei_{zone}"] = int(len(sel))
+            if inst.get("expected_from_germ_cell", True):
+                summ[f"{name}_expected_per_nucleus"] = expected_sc_count(sample["germ_cell"]) or float("nan")
+            nuclei = df
+            flags.append(f"spots_{name}:spotmax_n={len(per_spot)}")
+            return per_spot, summ
+
+        res_i = run_stage(f"spots_{name}", _inst, flags=flags, outcomes=outcomes,
+                          enabled=spots_on and r_idx is not None and n_nuclei > 0,
+                          skip_reason=("disabled" if not spots_on else
+                                       f"no {role} channel" if r_idx is None else "no nuclei"))
+        if res_i is not None:
+            extra_spot_tables[table_name], summ = res_i
+            spot_instance_summary.update(summ)
+
     # ---- SC tracing (per-nucleus SC length, fragment lower bound, fragmentation index) ----
     # The June 2026 tracer restored verbatim (germquant.sc.skeleton.trace_sc), run on the GERMLINE
     # nuclei only (the label image is masked to them; the tracer traces every label it is given).
@@ -528,7 +587,7 @@ def process_image(
         "qc_pass": qc_pass, "qc_flags": ";".join(qc_all),
         "segmentation_method": seg_method, "axis_confidence": axis_conf,
         **coloc_summary_fields, **sc_summary_fields, **env_summary_fields, **audit_summary_fields,
-        **acq_fields, **staging_summary_fields, **partition_summary, **tail_summary,
+        **acq_fields, **staging_summary_fields, **partition_summary, **tail_summary, **spot_instance_summary,
     }])
 
     # ---- write outputs ----
@@ -553,10 +612,14 @@ def process_image(
                 excluded["nucleus_id"].map(mg["granule_volume_um3"]) if mg is not None else 0.0)
             excluded["granule_volume_um3"] = excluded["granule_volume_um3"].fillna(0.0)
         nuclei = pd.concat([nuclei, excluded], ignore_index=True)
+        for col in extra_spot_cols:            # off-gonad nuclei: a real zero for every extra spot instance
+            if col in nuclei.columns:
+                nuclei[col] = nuclei[col].fillna(0).astype(int)
     tables = {"nuclei": nuclei, "spots": spots, "granules": granules,
               "coloc": coloc, "image_summary": image_summary,
               "sc_tracks": sc_tracks, "sc_per_nucleus": sc_per_nuc, "mask_audit": audit_table,
-              "zones": zones_table, "partition": partition_table, "granule_tail": tail_table}
+              "zones": zones_table, "partition": partition_table, "granule_tail": tail_table,
+              **extra_spot_tables}
 
     def _write():
         _write_tables(tables, shared, out_dir, sample["image_id"], cfg.get("output.formats", ["csv"]))
@@ -653,7 +716,7 @@ def _conform_schema(df, name):
     KeyError in R. Extra columns a stage adds (e.g. per-role intensities) are kept after.
     """
     df = df.copy()
-    declared = schema.TABLES.get(name, [])
+    declared = schema.TABLES.get(name, schema.SPOTS if name.startswith("spots_") else [])
     for col in declared:
         if col not in df.columns:
             df[col] = pd.NA
