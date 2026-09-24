@@ -64,9 +64,72 @@ image is not the standard DAPI / SYP / RAD-51 panel, or when you want to process
 This processes every `.nd2` under the folder, including sub-folders, one image at a time, and
 skips the `10x` and `largeimage` overviews on its own. It writes one results sub-folder per image
 and a `batch_summary.csv` listing them all with their nucleus counts and QC flags. Many images can
-take hours; leave the window open. If it is interrupted, images that already finished keep their
-results folders, but running the same line again reprocesses everything, so point `--out` at a new
-folder or move the finished ones aside first.
+take hours; leave the window open. If it is interrupted, add `--resume` to the same line: images
+whose results folder already holds a completion marker written with the same config, the same
+stages, the same xy stride and the same nucleus model, and with no failed stage, are skipped; the
+rest are processed, and the summary is rebuilt from every finished folder of the study. Without
+`--resume` the batch reprocesses everything.
+
+To drop particular gonads from a study (a fused carcass, a second germline limb), list their ids in
+a JSON file and point `qc.exclusions_file` in the config at it. An entry matches whole name parts
+only: `HS_male_07` drops `..._HS_male_07` but not `..._noHS_male_07` or `..._HS_male_070`. The
+analysis-style file with `excluded_short_ids` and `excluded_batch` is accepted as is. Both `batch`
+and the Snakemake workflow read it, and the excluded files are named in the run manifest.
+
+### Stacking the results of a batch
+
+```
+.venv\Scripts\germquant.exe collect "C:\path\to\RESULTS_FOLDER"
+```
+
+writes `batch_nuclei.csv`, `batch_spots.csv`, `batch_granules.csv`, `batch_coloc.csv` and
+`batch_image_summary.csv` (every per-image table stacked, one file each) next to `batch_summary.csv`.
+Run it whenever you like, for example after reprocessing a few images.
+
+### Staging pachytene by hand
+
+Automatic pachytene staging was never reliable enough on these gonads, so it is drawn by hand once
+per image and reused by every stage that needs it:
+
+```
+.venv\Scripts\germquant.exe trace "C:\path\to\RESULTS_FOLDER" --config config\config_ccw77.yaml
+```
+
+opens each finished image (DAPI grey, SYP red; scroll for single planes) and you click a line from
+the pachytene start to its end, then press Enter. The line is saved in whole-image microns to the
+traces file named by `staging.traces_file` in the config. With `staging.enabled: true` the pipeline
+then assigns every germline nucleus a zone (early, mid, late thirds of your line, or pre, post,
+off_axis). `germquant restage RESULTS --config ...` recomputes the zones after you redraw a line,
+without reprocessing the image.
+
+### Counting a second kind of focus (COSA-1 crossovers)
+
+The spot counter is not tied to RAD-51. A profile can declare further instances of it, each on its
+own channel role with its own table and nucleus column, for example COSA-1 crossover foci:
+
+```
+spots:
+  instances:
+    - name: crossover           # -> table spots_crossover, nuclei column n_spots_crossover
+      role: crossover_foci      # a role you add to a channel map (do not edit the shipped maps)
+      restrict_to_zone: late    # late-pachytene mean when the staging stage has run
+      expected_from_germ_cell: true   # 6 per oocyte, 5 per spermatocyte, reported next to the mean
+```
+
+Detection parameters default to the `spots` block and can be overridden per instance.
+
+### Choosing what to measure (profiles)
+
+Instead of `--config config\config.yaml` you can name a profile: `--profile rad51_foci` (RAD-51 foci
+only), `--profile segmentation_only` (nuclei and germline only), `--profile n2_sc` (adds the SC tracer
+for fragmentation; see docs/SC_TRACING.md) or `--profile ccw77_partition` (the SYP-3 / PGL-1
+partition analysis with lamin envelopes, hand-traced staging and the Imaris-calibrated granule recipe,
+on top of `config\config_ccw77.yaml`). A profile is a short file in `config\profiles\` that switches
+stages on or off on top of a base config; every optional stage can also be switched off on the command
+line with `--no-<stage>` (`--no-spots`, `--no-coloc`, `--no-granule`, `--no-axis`, `--no-germline`,
+`--no-envelope`, `--no-staging`, `--no-partition`, ...). The staging stage has to run before the
+partition zones or a late-pachytene spot mean can exist. `germquant trace` takes optional image ids,
+`--traces PATH`, `--redo` (revisit traced images) and `--stride N` (display resolution, default 2).
 
 ### Segmentation only (no spot counting)
 
@@ -204,6 +267,17 @@ Requirements: 64-bit Windows, an NVIDIA GPU (RTX 30, 40 or 50 series), about 10 
 
 Linux and cluster installs use the Dockerfile or `apptainer.def`; `environment.yml` and
 `pixi.toml` pin the same environment.
+
+## Setting up an Apple Silicon Mac (one time)
+
+The pipeline also runs on M-series Macs, using the Mac's GPU through Metal for the nucleus
+segmentation and the CPU for everything else. Follow `docs/MAC_METAL.md`: Python 3.11, `uv venv`,
+`uv pip install -c constraints/mac-arm64-2026-09.txt -e ".[gpu,sc]" spotmax cellacdc`, the model
+file, then `.venv/bin/germquant check-gpu` (it should say "Apple Silicon GPU via Metal"). On a Mac
+the drag-and-drop file is `quantify.command`, and every command in this README works with
+`.venv/bin/germquant` in place of `.venv\Scripts\germquant.exe`. Expect the segmentation to take
+longer than on the lab PC, and compare one gonad against the workstation before pooling numbers
+from both machines (the Metal path runs Cellpose in float32).
 
 ## Words you might not know
 

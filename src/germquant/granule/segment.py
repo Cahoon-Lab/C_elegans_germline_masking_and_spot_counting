@@ -78,6 +78,64 @@ def segment_granules(
     return labels.astype(np.int32), df
 
 
+TOPHAT_DEFAULTS = {
+    "smooth_um": 0.15,       # gaussian smoothing of the raw PGL-1 channel
+    "bg_um": 0.513,          # background scale: top-hat = smoothed minus a wider gaussian
+    "k_noise": 4.48,         # threshold = k x noise, noise = RMS of the negative top-hat residuals in the region
+    "min_volume_um3": 0.003,
+    "max_volume_um3": 15.0,
+}
+
+
+def segment_granules_tophat(
+    img: np.ndarray,
+    region_mask: np.ndarray,
+    spacing: tuple[float, float, float],
+    *,
+    marker: str = "PGL-1",
+    smooth_um: float = 0.15,
+    bg_um: float = 0.513,
+    k_noise: float = 4.48,
+    min_volume_um3: float = 0.003,
+    max_volume_um3: float = 15.0,
+) -> tuple[np.ndarray, pd.DataFrame]:
+    """The Imaris-calibrated granule recipe of the August 2026 ccw77 analysis (`granule.method:
+    imaris_tophat`), ported verbatim from analysis/coloc/scripts/pc_lamin_worker.segment_granules:
+    gaussian-smoothed channel minus a wider gaussian (a top-hat), thresholded at k x the noise level
+    estimated from the negative residuals inside the region, connected components, and a physical
+    volume gate applied to count x voxel volume exactly as the script did. Calibrated on HS_male_008
+    against Ryan's Imaris count (3187 v 3186); intended for the cytoplasm shell outside the lamin
+    envelope. Returns (labels, per-granule table) like `segment_granules`."""
+    from scipy import ndimage as ndi
+
+    img = np.asarray(img).astype(np.float32)
+    region = np.asarray(region_mask, dtype=bool)
+    sp = np.asarray(spacing, dtype=float)
+    if not region.any():
+        return np.zeros(img.shape, np.int32), pd.DataFrame(columns=GRANULE_COLS)
+    sm = ndi.gaussian_filter(img, sigma=tuple(smooth_um / sp))
+    th = sm - ndi.gaussian_filter(sm, sigma=tuple(bg_um / sp))
+    rr = th[region]
+    neg = rr[rr < 0]
+    noise = float(np.sqrt(np.mean(neg ** 2))) if neg.size > 50 else float(np.std(rr))
+    lab, _ = ndi.label((th > k_noise * noise) & region)
+    if lab.max() == 0:
+        return np.zeros(img.shape, np.int32), pd.DataFrame(columns=GRANULE_COLS)
+    vvol = float(np.prod(sp))
+    vol = np.bincount(lab.ravel()) * vvol
+    keep = np.where((vol >= min_volume_um3) & (vol <= max_volume_um3))[0]
+    keep = keep[keep != 0]
+    from skimage.segmentation import relabel_sequential
+
+    lab = np.where(np.isin(lab, keep), lab, 0)
+    lab, _, _ = relabel_sequential(lab)
+    lab = lab.astype(np.int32)
+    df = _measure(lab, img, sp, marker)
+    if not df.empty:
+        df["detector"] = "imaris_tophat_cc"
+    return lab, df
+
+
 def _threshold(vals: np.ndarray, method: str) -> float | None:
     """Global intensity threshold over the in-region values. Returns None if it can't be computed
     (empty / flat region), so the caller yields zero granules rather than crashing."""

@@ -1,0 +1,27 @@
+# Apple Silicon (arm64) pins, derived from the validated workstation set (desktop-2026-09.txt): the
+# same versions minus the CUDA-only packages. torch comes from PyPI (the default macOS arm64 wheel
+# includes Metal / MPS support; no +cu128 build exists for macOS), CuPy is not installed (SpotMAX's
+# CuPy path is CUDA-only and unused; it runs on the CPU). Install with
+#   uv pip install -c constraints/mac-arm64-2026-09.txt -e ".[gpu,sc]" spotmax cellacdc
+# and verify with `germquant check-gpu` (should report the Metal GPU). Numbers produced on a Mac should
+# be compared with the workstation goldens before they are pooled with workstation numbers (different
+# torch backend, float32 instead of bfloat16 in Cellpose).
+cellacdc==1.7.1
+cellpose==4.2.1.1
+dask==2026.6.0
+matplotlib==3.11.0
+nd2==0.11.3
+numba==0.65.1
+numpy==2.4.6
+opencv-python-headless==4.13.0.92
+pandas==3.0.3
+pyarrow==24.0.0
+PyYAML==6.0.3
+scikit-image==0.26.0
+scikit-learn==1.9.0
+scipy==1.17.1
+skan==0.13.1
+spotmax==1.3.1
+tifffile==2026.3.3
+torch==2.11.0
+torchvision==0.26.0

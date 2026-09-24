@@ -1,0 +1,14 @@
+# Profile: SC tracing for fragmentation (nuclei -> germline -> axis -> spots if a RAD-51 channel is
+# present -> per-nucleus SC tracer). Overlays config/config.yaml.
+#
+# CALIBRATE BEFORE QUOTING ABSOLUTE LENGTHS: the tracer is validated on synthetic SC ground truth only
+# (length recoverable, fragment count a lower bound); the Imaris Filament calibration (roadmap step 13)
+# has not been done, and every run carries the sc:uncalibrated flag until it is. docs/SC_TRACING.md.
+extends: config.yaml
+
+sc:
+  trace:
+    enabled: true
+  min_fragment_length_um: 0.5   # ignore skeleton specks below this (frozen default)
+coloc:
+  enabled: false                # no PGL-1 channel expected; also switches the granule stage off

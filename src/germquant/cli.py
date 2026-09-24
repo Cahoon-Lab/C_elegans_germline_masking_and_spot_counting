@@ -39,24 +39,43 @@ def main(argv: list[str] | None = None) -> int:
 
     pr = sub.add_parser("run", help="process a single .nd2")
     pr.add_argument("nd2")
-    pr.add_argument("--config", required=True)
+    _add_config_args(pr)
     pr.add_argument("--out", required=True)
     pr.add_argument("--xy-stride", type=int, default=1, help="downsample xy for a quick test")
     pr.add_argument("--z-range", type=int, nargs=2, default=None, metavar=("Z0", "Z1"))
-    pr.add_argument("--no-spots", action="store_true",
-                    help="segmentation only: skip RAD-51/SpotMAX spot detection (fast, never wedges)")
-    pr.add_argument("--no-coloc", action="store_true",
-                    help="skip PGL-1 granule surfacing + SYP<->PGL-1 colocalization stage")
+    _add_stage_switches(pr)
 
     pb = sub.add_parser("batch", help="process every .nd2 under a folder, mirroring the tree")
     pb.add_argument("folder")
-    pb.add_argument("--config", required=True)
+    _add_config_args(pb)
     pb.add_argument("--out", required=True)
     pb.add_argument("--xy-stride", type=int, default=1)
-    pb.add_argument("--no-spots", action="store_true",
-                    help="segmentation only: skip RAD-51/SpotMAX spot detection (fast, never wedges)")
-    pb.add_argument("--no-coloc", action="store_true",
-                    help="skip PGL-1 granule surfacing + SYP<->PGL-1 colocalization stage")
+    pb.add_argument("--resume", action="store_true",
+                    help="skip images whose results folder holds a completion marker written with the "
+                         "same config and the same stages (an interrupted batch picks up where it stopped)")
+    _add_stage_switches(pb)
+
+    pc = sub.add_parser("collect", help="stack the per-image tables under a results folder into batch_<table>.csv "
+                                        "and rebuild batch_summary.csv (safe to rerun any time)")
+    pc.add_argument("results_root")
+
+    pt = sub.add_parser("trace", help="draw the pachytene region on each finished image (pop-up); saves the "
+                                      "polylines in whole-image microns to the traces file the staging stage reads")
+    pt.add_argument("results_root")
+    pt.add_argument("image_ids", nargs="*", help="only these images (default: every finished image without a trace)")
+    _add_config_args(pt)
+    pt.add_argument("--traces", help="traces JSON, relative to the working directory (default: staging.traces_file "
+                                     "of the config, relative to the repo)")
+    pt.add_argument("--redo", action="store_true", help="also show images that already have a trace")
+    pt.add_argument("--stride", type=int, default=2, help="xy stride of the display (2 = half resolution)")
+
+    ps = sub.add_parser("restage", help="recompute <image_id>__zones.csv for finished images from the traces file "
+                                        "(cheap geometry; nothing else is touched)")
+    ps.add_argument("results_root")
+    ps.add_argument("image_ids", nargs="*")
+    _add_config_args(ps)
+    ps.add_argument("--traces", help="traces JSON, relative to the working directory (default: staging.traces_file "
+                                     "of the config, relative to the repo)")
 
     pv = sub.add_parser("validate", help="compare pipeline output to hand-scored ground truth")
     pv.add_argument("--pred", help="pipeline CSV (counts/lengths mode)")
@@ -94,11 +113,57 @@ def main(argv: list[str] | None = None) -> int:
         "info": lambda: _info(args.nd2),
         "run": lambda: _run(args),
         "batch": lambda: _batch(args),
+        "collect": lambda: _collect(args),
+        "trace": lambda: _trace(args),
+        "restage": lambda: _restage(args),
         "validate": lambda: _validate(args),
         "prep-training": lambda: _prep_training(args),
         "finetune": lambda: _finetune(args),
         "check-gpu": lambda: _check_gpu(),
     }[args.cmd]()
+
+
+def _add_config_args(parser) -> None:
+    g = parser.add_mutually_exclusive_group(required=True)
+    g.add_argument("--config", help="config yaml (config/config.yaml, or any file; may use `extends:`)")
+    g.add_argument("--profile", help="name of a profile in config/profiles/<NAME>.yaml (a small overlay "
+                                     "on config/config.yaml that switches the stages a study needs)")
+
+
+def _resolve_config_path(args) -> Path:
+    if getattr(args, "profile", None):
+        import os
+
+        roots = [r for r in (provenance._repo_root(), Path.cwd(),
+                             Path(os.environ["GERMQUANT_CONFIG_ROOT"]) if os.environ.get("GERMQUANT_CONFIG_ROOT") else None)
+                 if r is not None]
+        tried = []
+        for root in roots:
+            p = root / "config" / "profiles" / f"{args.profile}.yaml"
+            tried.append(p)
+            if p.is_file():
+                return p
+        have = sorted({x.stem for r in roots for x in (r / "config" / "profiles").glob("*.yaml")})
+        raise SystemExit(f"no profile {args.profile!r}; looked in {[str(t) for t in tried]}; available: {have} "
+                         f"(set GERMQUANT_CONFIG_ROOT to the checkout that holds config/profiles)")
+    return Path(args.config)
+
+
+def _add_stage_switches(parser) -> None:
+    """One generated ``--no-<stage>`` per switchable stage in `germquant.stages.STAGES` (so
+    ``--no-spots`` and ``--no-coloc`` keep working and new optional stages get a switch for free)."""
+    from .stages import cli_switches
+
+    for st in cli_switches():
+        parser.add_argument(f"--no-{st.name}", action="store_true",
+                            help=st.legacy_cli_help or f"skip the {st.name} stage ({st.help})")
+
+
+def _apply_switches(cfg, args) -> None:
+    from .stages import apply_cli_switches
+
+    for msg in apply_cli_switches(cfg, args):
+        print(msg)
 
 
 def _force_utf8_stdio() -> None:
@@ -127,17 +192,12 @@ def _info(nd2: str) -> int:
 def _run(args) -> int:
     from .pipeline import process_image
 
-    cfg = load_config(args.config)
-    if getattr(args, "no_spots", False):
-        cfg.set("spots.enabled", False)
-        print("segmentation only: skipping spot detection (--no-spots)")
-    if getattr(args, "no_coloc", False):
-        cfg.set("coloc.enabled", False)
-        print("skipping PGL-1 granule surfacing + colocalization (--no-coloc)")
+    cfg = load_config(_resolve_config_path(args))
+    _apply_switches(cfg, args)
     out = Path(args.out)
-    prov = provenance.write_manifest(out, config_hash=cfg.hash, config=cfg.as_dict())
     z_range = tuple(args.z_range) if args.z_range else None
-    res = process_image(args.nd2, cfg, out, xy_stride=args.xy_stride, z_range=z_range, prov=prov)
+    # process_image writes run_manifest.json itself (with the run geometry and per-stage hashes)
+    res = process_image(args.nd2, cfg, out, xy_stride=args.xy_stride, z_range=z_range, prov=None)
     mark = "✓" if res["qc_pass"] else "⚠"
     print(f"\n{mark} {res['image_id']}: {res['n_nuclei']} nuclei, qc_pass={res['qc_pass']}")
     if res["qc_flags"]:
@@ -151,36 +211,52 @@ def _run(args) -> int:
 def _batch(args) -> int:
     import pandas as pd
 
+    from . import batch as B
     from .pipeline import process_image
 
-    cfg = load_config(args.config)
-    if getattr(args, "no_spots", False):
-        cfg.set("spots.enabled", False)
-        print("segmentation only: skipping spot detection (--no-spots)")
-    if getattr(args, "no_coloc", False):
-        cfg.set("coloc.enabled", False)
-        print("skipping PGL-1 granule surfacing + colocalization (--no-coloc)")
+    cfg = load_config(_resolve_config_path(args))
+    _apply_switches(cfg, args)
     root = Path(args.folder)
     out_root = Path(args.out)
     glob = cfg.get("io.input_glob", "**/*.nd2")
     excludes = cfg.get("io.exclude_patterns", [])
+    exclusions = B.load_exclusions(cfg.get("qc.exclusions_file"), cfg.base_dir)
 
-    files = [
-        f for f in sorted(root.glob(glob))
-        if not any(fnmatch.fnmatch(f.name.lower(), pat.lower()) for pat in excludes)
-    ]
+    files, dropped = B.discover_files(root, glob, excludes, exclusions)
+    for f, why in dropped:
+        if why.startswith("exclusions_file"):
+            print(f"excluded by {why}: {f.name}")
     if not files:
         print(f"No .nd2 files matched {glob} under {root}", file=sys.stderr)
         return 1
 
+    # image-independent provenance, computed once per batch: the segment sub-hash lets --resume notice a
+    # retrained model or a Cellpose upgrade (per-image geometry lives in <id>__stages.json / __done.json)
+    from .pipeline import resolve_model_path
+    from .stages import stage_hashes as stage_hashes_fn
+
+    model_sha = (provenance.file_sha256(resolve_model_path(cfg))
+                 if str(cfg.get("segmentation.nuclei.method", "auto")) != "classical" else "unused")
+    segment_hash = stage_hashes_fn(cfg, {}, provenance.tool_versions(), model_sha)["segment"]
     prov = provenance.write_manifest(out_root, config_hash=cfg.hash, config=cfg.as_dict(),
-                                     extra={"n_files": len(files), "input_root": str(root)})
+                                     extra={"n_files": len(files), "input_root": str(root),
+                                            "excluded": [str(f) for f, _ in dropped],
+                                            "xy_stride": int(args.xy_stride), "model_sha256": model_sha,
+                                            "enabled_stages": B.enabled_stage_names(cfg)})
     print(f"Processing {len(files)} files -> {out_root}")
     summaries = []
+    resume = bool(getattr(args, "resume", False))
     for i, f in enumerate(files, 1):
         rel = f.relative_to(root).parent
         out_dir = out_root / rel / f.stem
         print(f"[{i}/{len(files)}] {f.name}")
+        if resume:
+            done, why = B.is_done(out_dir, f.stem, cfg, xy_stride=args.xy_stride, segment_hash=segment_hash)
+            if done:
+                print("    already done (completion marker matches); skipping")
+                continue
+            if why != "no completion marker":
+                print(f"    reprocessing: {why}")
         try:
             res = process_image(f, cfg, out_dir, xy_stride=args.xy_stride, prov=prov)
             isum = res["tables"]["image_summary"]
@@ -196,21 +272,67 @@ def _batch(args) -> int:
     # Framing QC: flag images whose germline count is a strong outlier vs the batch median (a robust,
     # threshold-free proxy for "two gonad arms / extra tissue / fuller distal capture in frame" — worth
     # eyeballing the montage; the axis/position readout for such gonads is unreliable). Spot COUNTS are
-    # unaffected, so this is advisory, not a failure.
-    germ = [s["n_germline"] for s in summaries if s["qc_pass"] and s["n_germline"] > 0]
-    if len(germ) >= 4:
-        import statistics
-        med = statistics.median(germ)
-        factor = float(cfg.get("qc.germline_outlier_factor", 1.8))
-        for s in summaries:
-            if med > 0 and s["n_germline"] > factor * med:
-                flag = f"qc:germline_count_outlier_{s['n_germline']}_vs_median{med:.0f}_review_framing"
-                s["qc_flags"] = f"{s['qc_flags']};{flag}" if s["qc_flags"] else flag
-
+    # unaffected, so this is advisory, not a failure. The same rule serves `collect`.
+    factor = float(cfg.get("qc.germline_outlier_factor", 1.8))
     from .fsutil import long_path
-    pd.DataFrame(summaries).to_csv(long_path(out_root / "batch_summary.csv"), index=False)
+    if resume:
+        # a resumed batch: every completed folder of THIS study on disk, plus this pass's failures
+        failed = [s for s in summaries if not s["qc_pass"] and str(s["qc_flags"]).startswith("EXCEPTION")]
+        counts = B.collect(out_root, image_ids={f.stem for f in files}, extra_rows=failed, outlier_factor=factor)
+        print(f"\nDone. Resumed batch collected: {counts}. Summary -> {out_root / 'batch_summary.csv'}")
+        return 0
+    summaries = B.apply_framing_qc(summaries, factor)
+    pd.DataFrame(summaries, columns=B.SUMMARY_COLS).to_csv(long_path(out_root / "batch_summary.csv"), index=False)
     n_pass = sum(s["qc_pass"] for s in summaries)
     print(f"\nDone. {n_pass}/{len(files)} passed QC. Summary -> {out_root / 'batch_summary.csv'}")
+    return 0
+
+
+def _traces_path(cfg, args) -> Path:
+    tf = getattr(args, "traces", None)
+    if tf:
+        return Path(tf).resolve()                  # a command-line path is relative to the working directory
+    tf = cfg.get("staging.traces_file", "staging/pachytene_traces.json")
+    return Path(tf) if Path(tf).is_absolute() else cfg.base_dir / tf   # the config value: relative to the repo
+
+
+def _trace(args) -> int:
+    from .staging import load_traces
+    from .staging.tracer import results_images, run_gui
+
+    cfg = load_config(_resolve_config_path(args))
+    tf = _traces_path(cfg, args)
+    items = results_images(args.results_root)
+    have = load_traces(tf)
+    if args.image_ids:
+        items = [it for it in items if it[0] in set(args.image_ids)]
+    elif not args.redo:
+        items = [it for it in items if have.get(it[0], {}).get("status") not in ("traced", "skipped")]
+    if not items:
+        print("nothing to trace (use --redo to revisit traced images)")
+        return 0
+    print(f"{len(items)} image(s) to trace -> {tf}")
+    run_gui(items, cfg, tf, stride=int(args.stride),
+            off_axis_um=float(cfg.get("staging.off_axis_um") or 20.0))
+    return 0
+
+
+def _restage(args) -> int:
+    from .staging.tracer import restage
+
+    cfg = load_config(_resolve_config_path(args))
+    done = restage(args.results_root, _traces_path(cfg, args), cfg, args.image_ids or None)
+    print(f"restaged {len(done)} image(s)")
+    return 0
+
+
+def _collect(args) -> int:
+    from . import batch as B
+
+    counts = B.collect(args.results_root)
+    for k, v in counts.items():
+        print(f"  {k}: {v} rows")
+    print(f"  -> {Path(args.results_root) / 'batch_<table>.csv'} and batch_summary.csv")
     return 0
 
 
@@ -280,28 +402,35 @@ def _finetune(args) -> int:
 
 
 def _check_gpu() -> int:
-    """Pre-flight GPU check for a real run. Passes on any CUDA GPU adequate for Cellpose-SAM
-    (compute capability >= 7.0) — the workstation RTX 5090 (sm_120) AND the HPC A100 (sm_80) /
-    L40 (sm_89) on RMACC Alpine. Returns nonzero only if torch/CUDA is missing or the GPU is too
-    old. The single cu128 wheel covers all these archs, so one container is portable across them."""
+    """Pre-flight accelerator check for a real run. Passes on any CUDA GPU adequate for Cellpose-SAM
+    (compute capability >= 7.0: the workstation RTX 5090, the Alpine A100 / L40) and on an Apple
+    Silicon GPU through Metal (MPS). Returns nonzero when torch is missing, only the CPU is available,
+    or the CUDA GPU is too old. Honours $GERMQUANT_DEVICE like the pipeline does."""
+    from . import device as D
+
     try:
         import torch
     except Exception as e:  # noqa: BLE001
         print(f"torch not importable ({e}); install germquant[gpu].", file=sys.stderr)
         return 1
-    if not torch.cuda.is_available():
-        print("CUDA not available to torch (CPU-only build or no GPU visible).", file=sys.stderr)
-        return 1
-    cap = torch.cuda.get_device_capability()
-    name = torch.cuda.get_device_name(0)
-    print(f"torch {torch.__version__}  device={name}  CUDA cap {tuple(cap)}")
-    if cap < (7, 0):
-        print(f"GPU compute capability {tuple(cap)} < 7.0 is too old for Cellpose-SAM.", file=sys.stderr)
-        return 1
-    known = {(12, 0): "RTX 5090 (Blackwell)", (9, 0): "H100 (Hopper)",
-             (8, 9): "L40/L40S (Ada)", (8, 0): "A100 (Ampere)"}
-    print(f"OK — {known.get(tuple(cap), 'CUDA GPU')}: usable for Cellpose-SAM + SpotMAX.")
-    return 0
+    chosen = D.select_device()
+    print(D.describe())
+    if chosen == "cuda":
+        cap = torch.cuda.get_device_capability()
+        if cap < (7, 0):
+            print(f"GPU compute capability {tuple(cap)} < 7.0 is too old for Cellpose-SAM.", file=sys.stderr)
+            return 1
+        known = {(12, 0): "RTX 5090 (Blackwell)", (9, 0): "H100 (Hopper)",
+                 (8, 9): "L40/L40S (Ada)", (8, 0): "A100 (Ampere)"}
+        print(f"OK, {known.get(tuple(cap), 'CUDA GPU')}: usable for Cellpose-SAM + SpotMAX.")
+        return 0
+    if chosen == "mps":
+        print("OK, Apple Silicon GPU via Metal: Cellpose-SAM runs on it in float32 (operators Metal lacks "
+              "fall back to the CPU); SpotMAX runs on the CPU. Expect a run to take longer than on the RTX 5090.")
+        return 0
+    print("No accelerator: neither CUDA nor Metal (MPS) is available to torch. Cellpose will run on the CPU, "
+          "which is very slow; check the torch install (see docs/MAC_METAL.md or the README).", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

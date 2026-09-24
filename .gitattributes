@@ -1,0 +1,5 @@
+# shell scripts must keep LF line endings on every platform (a CRLF shebang breaks on macOS / Linux)
+*.command text eol=lf
+*.sh text eol=lf
+scripts/germquant-apptainer text eol=lf
+apptainer.def text eol=lf

@@ -1,0 +1,29 @@
+# Profile: the August 2026 ccw77 SYP-3 / PGL-1 heat-shock partitioning analysis as pipeline stages
+# (docs/ROADMAP_modular_pipeline.md steps 7 to 10). Overlays config/config_ccw77.yaml, which stays
+# frozen so the July runs keep their config_hash; this profile is a new recipe with its own hash.
+#
+# nuclei -> germline -> lamin envelope (+ audit) -> hand-traced staging -> Imaris-calibrated granules
+# in the cytoplasm shell -> shell coloc (cytoplasmic operand only) -> partition coefficient with
+# controls (whole, early / mid / late, pooled pachytene) -> per-granule lit fraction.
+extends: config_ccw77.yaml
+
+acquisition:
+  read_exposures: true
+envelope:
+  enabled: true
+audit:
+  enabled: true
+staging:
+  enabled: true
+  traces_file: analysis/coloc/staging/pachytene_traces_whole_image.json
+granule:
+  method: imaris_tophat
+  region: cytoplasm_shell
+sc:
+  enabled: false                # the July intranuclear ribbon control operand: leaks into the shell, unused downstream
+coloc:
+  sc_operand: syp_aggregate
+partition:
+  enabled: true
+granule_tail:
+  enabled: true

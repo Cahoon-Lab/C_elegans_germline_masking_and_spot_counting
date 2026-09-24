@@ -22,11 +22,23 @@ def segment_nuclei(
     cellpose_model: str = "cpsam",
     diameter_um: float = 3.0,
     min_volume_um3: float = 4.0,
+    device: str | None = None,
 ) -> tuple[np.ndarray, str]:
-    """Return (label_img (Z,Y,X) int32, method_used)."""
+    """Return (label_img (Z,Y,X) int32, method_used). `device`: cuda | mps | cpu | auto (None = auto,
+    overridden by $GERMQUANT_DEVICE). On an accelerator failure (an operator Metal cannot run, out of
+    memory) the same model is retried once on the CPU before the classical fallback is considered."""
     if method in ("cellpose", "auto"):
         try:
-            labels = _cellpose(dna, spacing, cellpose_model, diameter_um)
+            try:
+                labels = _cellpose(dna, spacing, cellpose_model, diameter_um, device_pref=device)
+            except Exception as e:  # noqa: BLE001 - accelerator trouble: same model on the CPU first
+                from ..device import select_device
+
+                if select_device(device) == "cpu":
+                    raise
+                log.warning("Cellpose failed on %s (%s: %s); retrying on the CPU.", select_device(device),
+                            type(e).__name__, e)
+                labels = _cellpose(dna, spacing, cellpose_model, diameter_um, device_pref="cpu")
             return _drop_small(labels, spacing, min_volume_um3), "cellpose"
         except Exception as e:  # noqa: BLE001
             if method == "cellpose":
@@ -36,7 +48,7 @@ def segment_nuclei(
     return _drop_small(labels, spacing, min_volume_um3), "classical"
 
 
-def _cellpose(dna, spacing, model_name, diameter_um) -> np.ndarray:
+def _cellpose(dna, spacing, model_name, diameter_um, device_pref: str | None = None) -> np.ndarray:
     """Run Cellpose 3D. NOTE: the Cellpose API has drifted across 3.x -> SAM(4.x). Verify
     against the version pinned for your GPU before the first real run (this path is untested
     on CPU/CI). Two known sensitivities, handled below:
@@ -49,12 +61,20 @@ def _cellpose(dna, spacing, model_name, diameter_um) -> np.ndarray:
     """
     from cellpose import models
 
+    from ..device import select_device, torch_device
+
     anisotropy = spacing[0] / spacing[1]          # dz / dy (the key 3D correctness knob)
     is_builtin_sam = str(model_name).lower() in ("cpsam", "sam", "")
+    dev = select_device(device_pref)
+    # An explicit device covers CUDA, Apple Metal (mps) and CPU alike; Cellpose's own gpu=True would
+    # also find CUDA then MPS, but making it explicit keeps the choice in one place (germquant.device),
+    # honours $GERMQUANT_DEVICE, and lets MPS run in float32 (bfloat16 is incomplete on Metal).
+    kw_model = {"device": torch_device(dev), "gpu": dev != "cpu", "use_bfloat16": dev == "cuda"}
     if is_builtin_sam:
-        model = models.CellposeModel(gpu=True)
+        model = models.CellposeModel(**kw_model)
     else:
-        model = models.CellposeModel(gpu=True, pretrained_model=model_name)
+        model = models.CellposeModel(pretrained_model=model_name, **kw_model)
+    log.info("Cellpose device: %s", dev)
     # cpsam AND models fine-tuned FROM cpsam (our germline_nuclei_* models) are diameter-AGNOSTIC, so
     # run them at NATIVE scale — the regime they were validated in (F1 0.98). Passing `diameter` resizes
     # the image before inference: empirically marginally WORSE on real GT (0.978 vs 0.980) and ~15%

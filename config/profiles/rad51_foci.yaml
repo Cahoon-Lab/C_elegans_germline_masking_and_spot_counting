@@ -1,0 +1,8 @@
+# Profile: RAD-51 foci counting only (nuclei -> germline -> axis -> SpotMAX spots).
+# Overlays config/config.yaml; select with `germquant run X.nd2 --profile rad51_foci --out ...`.
+# A profile carries its own config_hash (base text + this text), so runs made with it are a new recipe;
+# runs made with config/config.yaml itself keep their historical hash.
+extends: config.yaml
+
+coloc:
+  enabled: false        # no PGL-1 channel expected; also switches the granule stage off
