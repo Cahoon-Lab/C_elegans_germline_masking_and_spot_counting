@@ -102,8 +102,13 @@ def main(argv: list[str] | None = None) -> int:
     pf.add_argument("--epochs", type=int, default=100)
     pf.add_argument("--print-only", action="store_true", help="print the command, don't run")
 
-    sub.add_parser("check-gpu", help="pre-flight: confirm a CUDA GPU adequate for Cellpose-SAM is visible "
-                                     "(RTX 5090 / A100 / L40 — compute capability >= 7.0)")
+    sub.add_parser("check-gpu", help="pre-flight: confirm an accelerator is visible (a CUDA GPU with compute "
+                                     "capability >= 7.0, or an Apple Silicon GPU through Metal)")
+
+    pm = sub.add_parser("get-model", help="download the trained Cellpose nucleus model (1.2 GB) from the GitHub "
+                                          "release into models/models/ and verify its checksum")
+    pm.add_argument("name", nargs="?", default="germline_nuclei_combined")
+    pm.add_argument("--force", action="store_true", help="download even if a verified copy exists")
 
     args = p.parse_args(argv)
     _force_utf8_stdio()
@@ -120,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         "prep-training": lambda: _prep_training(args),
         "finetune": lambda: _finetune(args),
         "check-gpu": lambda: _check_gpu(),
+        "get-model": lambda: _get_model(args),
     }[args.cmd]()
 
 
@@ -270,7 +276,7 @@ def _batch(args) -> int:
                               "qc_flags": f"EXCEPTION:{e}", "out_dir": str(out_dir)})
 
     # Framing QC: flag images whose germline count is a strong outlier vs the batch median (a robust,
-    # threshold-free proxy for "two gonad arms / extra tissue / fuller distal capture in frame" — worth
+    # threshold-free proxy for "two gonad arms / extra tissue / fuller distal capture in frame", worth
     # eyeballing the montage; the axis/position readout for such gonads is unreliable). Spot COUNTS are
     # unaffected, so this is advisory, not a failure. The same rule serves `collect`.
     factor = float(cfg.get("qc.germline_outlier_factor", 1.8))
@@ -399,6 +405,12 @@ def _finetune(args) -> int:
     finetune_cellpose(args.labeled_dir, args.out_model, pretrained=args.pretrained,
                       n_epochs=args.epochs, run=not args.print_only)
     return 0
+
+
+def _get_model(args) -> int:
+    from .models_registry import main as get_model_main
+
+    return get_model_main([args.name] + (["--force"] if args.force else []))
 
 
 def _check_gpu() -> int:

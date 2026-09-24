@@ -16,7 +16,7 @@ if not exist "%PY%" (
   echo.
   echo ERROR: the software environment is not set up ^(the .venv folder is missing^).
   echo Ask whoever set up this computer, or see the README section
-  echo   "Setting up a new computer (one time)".
+  echo   "Setting up a Windows computer".
   echo.
   pause
   exit /b 1
