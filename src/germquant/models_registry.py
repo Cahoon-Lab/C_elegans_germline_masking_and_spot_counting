@@ -73,7 +73,7 @@ def get_model(name: str = "germline_nuclei_combined", base_dir: str | Path | Non
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part")
     url = asset_url(name)
-    say(f"{name}: downloading {m['size'] / 1e9:.2f} GB from {url}")
+    say(f"{name}: downloading {m['size'] // 1_000_000} MB from {url}")
     _download(url, tmp, m["size"], say)
     got = sha256_of(tmp)
     if got != m["sha256"]:
@@ -99,10 +99,10 @@ def _download(url: str, tmp: Path, size: int, say) -> None:
                 break
             out.write(chunk)
             done += len(chunk)
-            if done - last >= (100 << 20):
+            if done - last >= 100_000_000:
                 last = done
                 rate = done / max(time.time() - t0, 1e-6) / 1e6
-                say(f"  {done >> 20} MB of {size >> 20} MB ({rate:.0f} MB/s)")
+                say(f"  {done // 1_000_000} MB of {size // 1_000_000} MB ({rate:.0f} MB/s)")
     if size and done != size:
         tmp.unlink(missing_ok=True)
         raise RuntimeError(f"download ended early ({done} of {size} bytes); check the connection and try again")
