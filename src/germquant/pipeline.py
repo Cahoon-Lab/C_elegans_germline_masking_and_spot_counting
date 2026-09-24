@@ -177,6 +177,7 @@ def process_image(
             dna, spacing,
             method=seg.get("method", "auto"), cellpose_model=str(model_file) if model_file else "cpsam",
             diameter_um=float(seg.get("diameter_um", 3.0)), min_volume_um3=float(seg.get("min_volume_um3", 4.0)),
+            device=seg.get("device"),          # cuda | mps | cpu | auto; $GERMQUANT_DEVICE overrides
         )
 
     labels, seg_method = run_stage("segment", _segment, flags=flags, outcomes=outcomes, fatal=True)
@@ -321,7 +322,7 @@ def process_image(
         staging_summary_fields = dict(stag_ctx["summary"])
     elif stag_on and outcomes.get("staging") is not None and outcomes["staging"].status == "ran":
         # ran but found no usable trace for this image: record it as a skip with the reason
-        why = next((f for f in flags if f.startswith("staging:no_trace") or f.startswith("staging:trace_status_")), "no trace")
+        why = next((f for f in flags if f.startswith(("staging:no_trace", "staging:trace_status_"))), "no trace")
         outcomes["staging"] = Outcome("skipped", reason=why.replace("staging:", "").replace("_", " "))
 
     # ---- spots (SpotMAX) — RAD-51 (or other) foci per nucleus.

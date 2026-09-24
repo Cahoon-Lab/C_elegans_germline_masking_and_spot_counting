@@ -268,6 +268,17 @@ Requirements: 64-bit Windows, an NVIDIA GPU (RTX 30, 40 or 50 series), about 10 
 Linux and cluster installs use the Dockerfile or `apptainer.def`; `environment.yml` and
 `pixi.toml` pin the same environment.
 
+## Setting up an Apple Silicon Mac (one time)
+
+The pipeline also runs on M-series Macs, using the Mac's GPU through Metal for the nucleus
+segmentation and the CPU for everything else. Follow `docs/MAC_METAL.md`: Python 3.11, `uv venv`,
+`uv pip install -c constraints/mac-arm64-2026-09.txt -e ".[gpu,sc]" spotmax cellacdc`, the model
+file, then `.venv/bin/germquant check-gpu` (it should say "Apple Silicon GPU via Metal"). On a Mac
+the drag-and-drop file is `quantify.command`, and every command in this README works with
+`.venv/bin/germquant` in place of `.venv\Scripts\germquant.exe`. Expect the segmentation to take
+longer than on the lab PC, and compare one gonad against the workstation before pooling numbers
+from both machines (the Metal path runs Cellpose in float32).
+
 ## Words you might not know
 
 - `.nd2`: the raw image file the Nikon confocal saves. It holds all channels and all z planes.

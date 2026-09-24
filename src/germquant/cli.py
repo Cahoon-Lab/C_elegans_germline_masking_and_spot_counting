@@ -402,28 +402,35 @@ def _finetune(args) -> int:
 
 
 def _check_gpu() -> int:
-    """Pre-flight GPU check for a real run. Passes on any CUDA GPU adequate for Cellpose-SAM
-    (compute capability >= 7.0) — the workstation RTX 5090 (sm_120) AND the HPC A100 (sm_80) /
-    L40 (sm_89) on RMACC Alpine. Returns nonzero only if torch/CUDA is missing or the GPU is too
-    old. The single cu128 wheel covers all these archs, so one container is portable across them."""
+    """Pre-flight accelerator check for a real run. Passes on any CUDA GPU adequate for Cellpose-SAM
+    (compute capability >= 7.0: the workstation RTX 5090, the Alpine A100 / L40) and on an Apple
+    Silicon GPU through Metal (MPS). Returns nonzero when torch is missing, only the CPU is available,
+    or the CUDA GPU is too old. Honours $GERMQUANT_DEVICE like the pipeline does."""
+    from . import device as D
+
     try:
         import torch
     except Exception as e:  # noqa: BLE001
         print(f"torch not importable ({e}); install germquant[gpu].", file=sys.stderr)
         return 1
-    if not torch.cuda.is_available():
-        print("CUDA not available to torch (CPU-only build or no GPU visible).", file=sys.stderr)
-        return 1
-    cap = torch.cuda.get_device_capability()
-    name = torch.cuda.get_device_name(0)
-    print(f"torch {torch.__version__}  device={name}  CUDA cap {tuple(cap)}")
-    if cap < (7, 0):
-        print(f"GPU compute capability {tuple(cap)} < 7.0 is too old for Cellpose-SAM.", file=sys.stderr)
-        return 1
-    known = {(12, 0): "RTX 5090 (Blackwell)", (9, 0): "H100 (Hopper)",
-             (8, 9): "L40/L40S (Ada)", (8, 0): "A100 (Ampere)"}
-    print(f"OK — {known.get(tuple(cap), 'CUDA GPU')}: usable for Cellpose-SAM + SpotMAX.")
-    return 0
+    chosen = D.select_device()
+    print(D.describe())
+    if chosen == "cuda":
+        cap = torch.cuda.get_device_capability()
+        if cap < (7, 0):
+            print(f"GPU compute capability {tuple(cap)} < 7.0 is too old for Cellpose-SAM.", file=sys.stderr)
+            return 1
+        known = {(12, 0): "RTX 5090 (Blackwell)", (9, 0): "H100 (Hopper)",
+                 (8, 9): "L40/L40S (Ada)", (8, 0): "A100 (Ampere)"}
+        print(f"OK, {known.get(tuple(cap), 'CUDA GPU')}: usable for Cellpose-SAM + SpotMAX.")
+        return 0
+    if chosen == "mps":
+        print("OK, Apple Silicon GPU via Metal: Cellpose-SAM runs on it in float32 (operators Metal lacks "
+              "fall back to the CPU); SpotMAX runs on the CPU. Expect a run to take longer than on the RTX 5090.")
+        return 0
+    print("No accelerator: neither CUDA nor Metal (MPS) is available to torch. Cellpose will run on the CPU, "
+          "which is very slow; check the torch install (see docs/MAC_METAL.md or the README).", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

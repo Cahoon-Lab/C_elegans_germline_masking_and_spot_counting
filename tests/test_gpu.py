@@ -7,9 +7,11 @@ import pytest
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("cellpose")
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="no CUDA GPU available")
+_mps = bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available())
+pytestmark = pytest.mark.skipif(not (torch.cuda.is_available() or _mps),
+                                reason="no CUDA or Apple Metal (MPS) accelerator available")
 
-from germquant.segment.nuclei import segment_nuclei  # noqa: E402
+from germquant.segment.nuclei import segment_nuclei
 
 SPACING = (0.4, 0.2, 0.2)
 
